@@ -41,5 +41,12 @@ external spawn : ('message inbox -> unit) ->
 external self : 'message inbox -> 'message pid
   = "caml_actor_self"
 
+external send : 'message pid -> 'message ->
+  (unit, send_error) result
+  = "caml_actor_send"
+
+external receive : 'message inbox -> 'message
+  = "caml_actor_receive"
+
 external yield : unit -> unit
   = "caml_actor_yield"

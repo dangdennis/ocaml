@@ -23,6 +23,8 @@
 
 struct caml_actor_scheduler;
 struct caml_actor_prepared_spawn;
+struct caml_actor_prepared_send;
+struct caml_actor_envelope;
 
 #define CAML_ACTOR_PID_INDEX_BITS 16
 #define CAML_ACTOR_PID_INDEX_MASK \
@@ -42,6 +44,7 @@ enum caml_actor_lifecycle {
   CAML_ACTOR_LIFECYCLE_FREE = 0,
   CAML_ACTOR_LIFECYCLE_RUNNABLE,
   CAML_ACTOR_LIFECYCLE_RUNNING,
+  CAML_ACTOR_LIFECYCLE_BLOCKED,
   CAML_ACTOR_LIFECYCLE_EXITED,
   CAML_ACTOR_LIFECYCLE_FAILED,
   CAML_ACTOR_LIFECYCLE_RETIRED
@@ -61,6 +64,7 @@ enum caml_actor_step_reason {
   CAML_ACTOR_STEP_IDLE = 0,
   CAML_ACTOR_STEP_REDUCTIONS,
   CAML_ACTOR_STEP_YIELD,
+  CAML_ACTOR_STEP_BLOCKED,
   CAML_ACTOR_STEP_HOST_ACTION,
   CAML_ACTOR_STEP_EXITED,
   CAML_ACTOR_STEP_FAILED
@@ -75,8 +79,16 @@ enum caml_actor_pid_lookup {
 enum caml_actor_control_request {
   CAML_ACTOR_CONTROL_NONE = 0,
   CAML_ACTOR_CONTROL_YIELD,
+  CAML_ACTOR_CONTROL_BLOCKED,
   CAML_ACTOR_CONTROL_UNSUPPORTED,
   CAML_ACTOR_CONTROL_HEAP_EXHAUSTED
+};
+
+enum caml_actor_send_status {
+  CAML_ACTOR_SEND_OK = 0,
+  CAML_ACTOR_SEND_NO_SUCH_ACTOR,
+  CAML_ACTOR_SEND_RESOURCE_UNAVAILABLE,
+  CAML_ACTOR_SEND_INVALID_CONTEXT
 };
 
 struct caml_actor_step {
@@ -126,6 +138,24 @@ CAMLextern int caml_actor_scheduler_commit_prepared(
 CAMLextern void caml_actor_scheduler_abort_prepared(
   struct caml_actor_prepared_spawn *prepared);
 
+/* Mailbox publication is transactional.  A prepared send owns its envelope
+   but is not linked into the destination mailbox until commit. */
+CAMLextern enum caml_actor_send_status caml_actor_scheduler_can_send(
+  struct caml_actor_scheduler *scheduler, uintnat pid);
+CAMLextern enum caml_actor_send_status caml_actor_scheduler_prepare_send(
+  struct caml_actor_scheduler *scheduler, uintnat pid,
+  struct caml_actor_envelope *envelope,
+  struct caml_actor_prepared_send **prepared);
+CAMLextern int caml_actor_scheduler_commit_send(
+  struct caml_actor_prepared_send *prepared);
+CAMLextern void caml_actor_scheduler_abort_send(
+  struct caml_actor_prepared_send *prepared);
+CAMLextern const struct caml_actor_envelope *
+caml_actor_scheduler_peek_current_message(
+  struct caml_actor_scheduler *scheduler);
+CAMLextern int caml_actor_scheduler_consume_current_message(
+  struct caml_actor_scheduler *scheduler);
+
 CAMLextern struct caml_actor_step caml_actor_scheduler_step(
   struct caml_actor_scheduler *scheduler);
 CAMLextern enum caml_actor_pid_lookup caml_actor_scheduler_snapshot(
@@ -142,6 +172,7 @@ CAMLextern void caml_actor_scheduler_test_request_minor_gc_after_switch(
 CAMLextern int caml_actor_scheduler_is_running(void);
 CAMLextern uintnat caml_actor_scheduler_current_pid(void);
 CAMLextern int caml_actor_scheduler_request_yield(void);
+CAMLextern int caml_actor_scheduler_request_blocked(void);
 CAMLextern int caml_actor_scheduler_request_unsupported(void);
 CAMLextern int caml_actor_scheduler_request_heap_exhausted(void);
 CAMLextern enum caml_actor_control_request
