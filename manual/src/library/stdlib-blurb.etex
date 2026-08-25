@@ -108,6 +108,7 @@ be called from C \\
 \end{tabular}
 \subsubsection*{sss:stdlib-multicore}{Multicore interface:}
 \begin{tabular}{lll}
+"Actor" & p.~\stdpageref{Actor} & isolated cooperative actors \\
 "Domain" & p.~\stdpageref{Domain} & domain spawn and join \\
 "Mutex" & p.~\stdpageref{Mutex} & mutual exclusion locks \\
 "Condition" & p.~\stdpageref{Condition} & condition variables \\
@@ -124,6 +125,7 @@ representation of values \\
 \end{latexonly}
 
 \begin{linklist}
+\stddocitem{Actor}{isolated cooperative actors}
 \stddocitem{Arg}{parsing of command line arguments}
 \stddocitem{Array}{array operations}
 \stddocitem{ArrayLabels}{array operations (with labels)}
