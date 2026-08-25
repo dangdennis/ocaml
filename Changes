@@ -209,6 +209,11 @@ OCaml 5.5.0 (19 June 2026)
 
 ### Runtime system:
 
+- Add an experimental, Linux/amd64 bytecode-only actor runtime with isolated
+  heaps, deterministic scheduling, typed mailboxes, failure containment,
+  runtime statistics, and an explicit unsupported-operation boundary.
+  (Dennis Dang)
+
 - #14365: Add an Idle phase to the GC for better performance on small
   heaps and for a smooth start at program launch and after a forced major GC.
   (Damien Doligez, review by Stephen Dolan and Nick Barnes)
