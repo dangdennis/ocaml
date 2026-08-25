@@ -20,6 +20,7 @@
 
 #include "config.h"
 #ifdef CAML_INTERNALS
+#include "actor_heap.h"
 #include "gc.h"
 #include "major_gc.h"
 #include "minor_gc.h"
@@ -231,14 +232,19 @@ enum caml_alloc_small_flags {
                                           CAMLassert ((tag_t) (tag) < 256); \
                                  CAMLassert ((wosize) <= Max_young_wosize); \
   caml_domain_state* dom_st = Caml_state;                                   \
-  dom_st->young_ptr -=  Whsize_wosize(wosize);                              \
-  if (Caml_check_gc_interrupt(dom_st)) {                                    \
-    GC(dom_st, wosize);                                                     \
+  if (CAMLunlikely(dom_st->actor_heap != NULL)) {                           \
+    (result) = caml_actor_heap_alloc_or_raise(                              \
+      dom_st->actor_heap, (wosize), (tag), (reserved));                     \
+  } else {                                                                  \
+    dom_st->young_ptr -= Whsize_wosize(wosize);                             \
+    if (Caml_check_gc_interrupt(dom_st)) {                                  \
+      GC(dom_st, wosize);                                                   \
+    }                                                                       \
+    Hd_hp (dom_st->young_ptr) =                                             \
+      Make_header_with_reserved((wosize), (tag), 0, (reserved));            \
+    (result) = Val_hp (dom_st->young_ptr);                                  \
+    DEBUG_clear ((result), (wosize));                                       \
   }                                                                         \
-  Hd_hp (dom_st->young_ptr) =                                               \
-    Make_header_with_reserved((wosize), (tag), 0, (reserved));              \
-  (result) = Val_hp (dom_st->young_ptr);                                    \
-  DEBUG_clear ((result), (wosize));                                         \
 }while(0)
 
 #define Alloc_small(result, wosize, tag, GC) \
