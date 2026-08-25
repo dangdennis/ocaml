@@ -1208,6 +1208,8 @@ runtime_COMMON_C_SOURCES = \
   addrmap \
   afl \
   alloc \
+  actor \
+  actor_copy \
   actor_heap \
   actor_scheduler \
   actor_world \

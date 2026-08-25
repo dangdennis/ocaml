@@ -1,3 +1,8 @@
+stdlib__Actor.cmo : actor.ml \
+    stdlib__Actor.cmi
+stdlib__Actor.cmx : actor.ml \
+    stdlib__Actor.cmi
+stdlib__Actor.cmi : actor.mli
 stdlib__Arg.cmo : arg.ml \
     stdlib__Sys.cmi \
     stdlib__String.cmi \

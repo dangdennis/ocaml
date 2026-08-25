@@ -1245,21 +1245,43 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 /* Calling C functions */
 
     Instruct(C_CALL1):
-      if (Actor_scheduler_running()) goto unsupported_operation;
+      if (Actor_scheduler_running()
+          && !caml_actor_scheduler_primitive_allowed(*pc, 1))
+        goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive1(*pc)(accu);
       Restore_after_c_call;
       pc++;
+      if (Actor_scheduler_running()) {
+        enum caml_actor_control_request request =
+          caml_actor_scheduler_take_control_request();
+
+        if (request == CAML_ACTOR_CONTROL_YIELD) goto actor_yield;
+        if (request == CAML_ACTOR_CONTROL_UNSUPPORTED)
+          goto unsupported_operation;
+        if (request == CAML_ACTOR_CONTROL_HEAP_EXHAUSTED)
+          goto actor_heap_exhausted;
+      }
       Next;
     Instruct(C_CALL2):
       if (Actor_scheduler_running()
-          && !caml_actor_scheduler_primitive_allowed(*pc))
+          && !caml_actor_scheduler_primitive_allowed(*pc, 2))
         goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive2(*pc)(accu, sp[2]);
       Restore_after_c_call;
       sp += 1;
       pc++;
+      if (Actor_scheduler_running()) {
+        enum caml_actor_control_request request =
+          caml_actor_scheduler_take_control_request();
+
+        if (request == CAML_ACTOR_CONTROL_YIELD) goto actor_yield;
+        if (request == CAML_ACTOR_CONTROL_UNSUPPORTED)
+          goto unsupported_operation;
+        if (request == CAML_ACTOR_CONTROL_HEAP_EXHAUSTED)
+          goto actor_heap_exhausted;
+      }
       Next;
     Instruct(C_CALL3):
       if (Actor_scheduler_running()) goto unsupported_operation;
@@ -1496,6 +1518,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 
     reduction_limit:
       suspend_reason = CAML_BYTECODE_STOP_REDUCTIONS;
+      goto suspend_interpreter;
+
+    actor_yield:
+      suspend_reason = CAML_BYTECODE_STOP_YIELD;
       goto suspend_interpreter;
 
     host_action:

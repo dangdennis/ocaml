@@ -17,7 +17,9 @@ runtime state.
 
 ## API
 
-The MVP public surface, beginning in PR 4b, has this shape:
+The complete MVP public surface has this shape. PR 4b introduces `run`,
+`spawn`, `self`, and `yield`; PR 5 adds `send` and `receive` without changing
+the types or constructors below:
 
 ```ocaml
 module Actor : sig
@@ -242,6 +244,56 @@ and contains no closure-graph copier. `GETGLOBAL`, its push/field variants, and
 and closure copying belong to PR 4b; any approved global-read surface remains
 a later claim. PR 4a also adds neither mailboxes nor independent collection,
 so it makes no public actor or heap-isolation claim.
+
+## PR 4b public-entry boundary
+
+PR 4b exposes `Actor.run`, `spawn`, `self`, and `yield` on Linux x86-64
+bytecode. Native code retains the same interface, but `run` returns
+`Unsupported_runtime` without invoking its closure. The mailbox operations in
+the final API remain absent until PR 5.
+
+`run` freezes the host world before creating the scheduler. It copies the root
+closure into actor zero, enters it with the actor-zero inbox immediate, and
+destroys every actor heap and stack before thawing the host. Only pointer-free
+lifecycle status crosses that teardown boundary; the OCaml `result` and any
+error string are allocated after thaw.
+
+The closure copier walks iteratively and preflights the complete captured
+graph before creating an unpublished target heap. It preserves cycles,
+aliases, recursive closure groups, and valid infix-closure offsets. Every
+reachable supported block is copied, including host blocks under the freeze,
+so a captured mutable value is never retained as a frozen edge. Immediates,
+canonical atoms, and validated same-image code pointers are the only retained
+identities. Finalisable values, unsupported tags, malformed closures, foreign
+or malformed interior pointers, and over-quota graphs are rejected without
+publishing a child.
+
+Child spawn has a prepare/commit boundary. The copied heap and initialized
+stack remain outside the PID table and ready queue until the parent has
+successfully allocated its `Ok pid` value. A failed copy or parent-result
+allocation destroys the unpublished child. Actor entry uses the runtime's
+registered bytecode callback return frame, and explicit yield becomes visible
+to the scheduler only after its `C_CALL1` primitive has returned and the
+interpreter has completed that instruction.
+
+All `GETGLOBAL` and `PUSHGETGLOBAL` forms remain denied, as does `SETGLOBAL`.
+Actor-safe code in this stage must lexically capture the data and helper
+closures it needs; the `Actor` operations are declared as direct externals so
+their calls do not require a module-global lookup. The actor primitive
+allowlist adds only the exact one-argument `spawn`, `self`, and `yield`
+functions to PR 4a's exact two-argument integer comparison.
+
+This is a safe-language, same-compiler-image boundary, not an `Obj` sandbox.
+Closure and infix layouts and every code pointer are validated, but PR 4b does
+not yet perform a complete reachable control-flow decode that could make an
+`Obj`-forged interior code pointer safe. The interpreter still dynamically
+fails closed before every denied opcode or primitive in ordinary compiler
+output.
+
+PR 4b still uses fixed bump arenas. It adds neither mailboxes nor private
+collection and therefore does not make the heap-isolated-actor MVP claim. Its
+gate is narrower: supported lexical captures are copied, module-global access
+is rejected, and no supported spawn can create a cross-actor mutable pointer.
 
 ## Isolation invariants
 
