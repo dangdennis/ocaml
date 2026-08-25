@@ -120,6 +120,43 @@ state. Separate actor stacks and complete host-context switching are later
 claim gates. A finite slice that reaches a non-entry effect stack is rejected;
 effects remain outside the MVP contract.
 
+## PR 2 fixed-arena boundary
+
+An active internal actor heap redirects both small and direct-large runtime
+allocation into one fixed, downward-growing arena. The payload mapping has an
+inaccessible guard page at each end of its page-rounded extent, a separate
+logical word quota, and a stable owner identifier; owner zero denotes the
+future root actor and is already accepted by the arena layer. Allocation
+checks the supported tag and complete block
+size before moving the cursor, so unsupported or over-quota requests do not
+change arena state. The stock minor pointer, shared major heap,
+major-allocation accounting, and memory profiler are not touched by a
+successful arena allocation.
+
+Creation and activation fail outside Linux x86-64 bytecode or when more than
+one Domain is running. Every allocation also rechecks that the requesting
+arena is the exclusively active arena of the current Domain.
+
+The live-arena registry classifies actor ranges before any stock runtime
+address test. A fixed out-of-arena shadow ledger records every allocation
+boundary and header. The verifier first compares the arena against that ledger
+and proves exact block tiling, then scans every allocated block, including
+unreachable blocks. An edge may target an immediate, a canonical static atom,
+an exact block owned by the same arena, or a validated infix pointer into a
+same-owner closure. Stock-young, unregistered host/shared, malformed-interior,
+and foreign-owner pointers are rejected. Closure code pointers must be aligned
+and name a registered code fragment. No general frozen host range is approved
+before PR 4.
+
+`caml_modify` and `caml_initialize` bypass stock barriers only for a checked
+same-owner destination and value. A last-resort guard rejects any direct call
+to `caml_shared_try_alloc` while an arena is active. Atomic operations, bulk
+array operations, raw bytecode writes, arbitrary primitives, urgent-GC paths,
+and switching OCaml execution between arenas have not yet been audited. PR 2
+therefore proves physical separation and explicit ownership verification only;
+it adds neither runnable actors nor independent collection, and it makes no
+heap-isolation claim.
+
 ## Isolation invariants
 
 Debug builds verify these rules at every mandatory checkpoint:
