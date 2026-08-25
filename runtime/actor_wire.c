@@ -548,8 +548,6 @@ enum caml_actor_wire_decode_status caml_actor_wire_decode(
 {
   struct caml_actor_heap_verify_result verification;
   value *targets = NULL;
-  mlsize_t used;
-  mlsize_t quota;
   enum caml_actor_wire_decode_status status =
     CAML_ACTOR_WIRE_DECODE_INTERNAL;
 
@@ -560,9 +558,7 @@ enum caml_actor_wire_decode_status caml_actor_wire_decode(
       || !caml_actor_wire_verify(envelope)) {
     return status;
   }
-  used = caml_actor_heap_used_words(target_heap);
-  quota = caml_actor_heap_quota_words(target_heap);
-  if (used > quota || envelope->graph_words > quota - used) {
+  if (!caml_actor_heap_reserve(target_heap, envelope->graph_words)) {
     return CAML_ACTOR_WIRE_DECODE_HEAP_EXHAUSTED;
   }
   if (envelope->node_count > SIZE_MAX / sizeof(*targets)) return status;
