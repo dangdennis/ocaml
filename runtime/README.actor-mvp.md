@@ -2,7 +2,7 @@
 
 This document is the normative contract for the experimental actor runtime.
 The implementation is intentionally staged. The `Actor` module is unavailable
-through PR 3, and no branch before PR 6 may claim heap isolation.
+through PR 4a, and no branch before PR 6 may claim heap isolation.
 
 ## Scope
 
@@ -17,7 +17,7 @@ runtime state.
 
 ## API
 
-The public surface introduced by PR 4 has this shape:
+The MVP public surface, beginning in PR 4b, has this shape:
 
 ```ocaml
 module Actor : sig
@@ -145,8 +145,8 @@ unreachable blocks. An edge may target an immediate, a canonical static atom,
 an exact block owned by the same arena, or a validated infix pointer into a
 same-owner closure. Stock-young, unregistered host/shared, malformed-interior,
 and foreign-owner pointers are rejected. Closure code pointers must be aligned
-and name a registered code fragment. No general frozen host range is approved
-before PR 4.
+and name a registered code fragment. No frozen host value is approved before
+PR 4a.
 
 `caml_modify` and `caml_initialize` bypass stock barriers only for a checked
 same-owner destination and value. A last-resort guard rejects any direct call
@@ -190,6 +190,58 @@ or audit allocating and mutation opcodes. The `Actor` module remains
 unavailable. Freeze/copy, a safe primitive and opcode subset, independent
 collection, and public lifecycle semantics remain later gates, so PR 3 makes
 neither a public-actor nor a heap-isolation claim.
+
+## PR 4a runtime-fence boundary
+
+PR 4a adds an internal, transactional actor-world fence. Freeze moves through
+`PREPARING`, `FROZEN`, and `THAWING`; it publishes `PREPARING` before doing
+runtime work so nested entry fails as busy. Any failed precondition or pending
+action exception rolls back the partially prepared world. Thaw must run on the
+same Domain. It checks the exact stock-runtime snapshot, reports corruption if
+anything changed, and then clears the fence.
+
+Frozen values are approved by an exact ledger, not by an address-range or
+"not young" test. Registration accepts only canonical stock-major block
+bases. Each entry records the block header and a snapshot of every payload
+word; duplicate registration and thaw verify both. Static atoms remain a
+separate explicit case. Unregistered blocks, interior pointers, malformed
+headers, and changed payloads are rejected.
+
+Pending stock-runtime work present at entry is drained before the world
+becomes `FROZEN`. Work discovered while canonicalizing the host heap, or while
+actors run, remains pending. The actor scheduler and interpreter do not process
+it; it becomes eligible only after actor state is gone and thaw has restored
+the host world.
+
+Between actor slices, frozen-world orchestration is trusted C code. It may use
+non-OCaml storage, but must not invoke OCaml callbacks or allocate in the stock
+minor heap. Stock shared-heap allocation is explicitly fenced while the world
+is frozen.
+
+An actor dispatch temporarily detaches the host C-root (`local_roots`) chain
+and restores the identical pointer after the actor stack and heap are removed.
+Actor allocation uses a nonraising arena attempt. An unsupported allocation
+stops as unsupported, while quota exhaustion becomes a pointer-free,
+actor-local heap-exhausted scheduler result instead of entering stock GC or
+raising through host runtime state.
+
+Mutation opcodes preflight the destination tag, bounds, owner, and right-hand
+side before computing a write address or changing memory. This covers field,
+vector, float-array, byte-string, and `OFFSETREF` writes. Global access,
+object-cache operations, debugger opcodes, and effects fail closed.
+`caml_modify` remains a last-resort checked backstop.
+
+The primitive policy is exact and executable-specific. The only allowed call
+is `C_CALL2` whose resolved function pointer is `caml_int_compare`; the
+primitive index is bounds-checked first. Every other `C_CALL*` is denied before
+entering C.
+
+PR 4a exposes no `Actor` module, accepts no general host closure as actor input,
+and contains no closure-graph copier. `GETGLOBAL`, its push/field variants, and
+`SETGLOBAL` remain denied, so there is no general global access. Public entry
+and closure copying belong to PR 4b; any approved global-read surface remains
+a later claim. PR 4a also adds neither mailboxes nor independent collection,
+so it makes no public actor or heap-isolation claim.
 
 ## Isolation invariants
 
@@ -286,7 +338,9 @@ replay divergence, and an `ACTOR_SEED` plus `ACTOR_TRACE` command.
 - PR 0 specifies this contract and makes the harness itself executable.
 - PR 1 proves resumable bytecode and safe reduction stops.
 - PR 2 proves disjoint allocation and mandatory owner verification.
-- PR 4 proves spawn copying, the freeze boundary, and safe-language closure.
+- PR 4a proves the internal freeze/thaw fence, exact frozen-value approval,
+  nonraising actor allocation, and the initial opcode/primitive fence.
+- PR 4b proves public entry, spawn copying, and safe-language closure.
 - PR 6 proves independent private collection. Only then is `heap-isolated` an
   accurate implementation claim.
 - PR 7 proves failure containment, deterministic cleanup, and stress replay.
@@ -302,8 +356,10 @@ creating a false-green signal.
 - PR 2: alternating contexts allocate in disjoint ranges; stock-major
   allocation and an injected foreign edge are rejected.
 - PR 3: two CPU-bound actors both progress; stale PIDs never revive.
-- PR 4: captured refs diverge after spawn; frozen global mutation and unsafe
-  primitives fail closed.
+- PR 4a: freeze/thaw rollback and snapshot checks hold; pending host actions
+  are deferred; fenced writes and unsafe primitives fail before side effects.
+- PR 4b: captured refs diverge after spawn; frozen global mutation fails
+  closed; unsupported closure captures publish no actor.
 - PR 5: FIFO wakeup, sender/receiver mutation independence, cycle and alias
   preservation, and transactional rejection of unsupported messages.
 - PR 6: repeated moving GC in actor A neither scans nor changes actor B; all

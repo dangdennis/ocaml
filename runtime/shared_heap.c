@@ -21,6 +21,7 @@
 #include <assert.h>
 #include "caml/addrmap.h"
 #include "caml/actor_heap.h"
+#include "caml/actor_world.h"
 #include "caml/custom.h"
 #include "caml/runtime_events.h"
 #include "caml/fail.h"
@@ -105,6 +106,66 @@ struct caml_heap_state {
 
   struct heap_stats stats;
 };
+
+static int pool_list_contains_block(pool *list, value candidate)
+{
+  for (pool *current = list; current != NULL; current = current->next) {
+    sizeclass size = current->sz;
+    header_t *cursor = POOL_FIRST_BLOCK(current, size);
+    header_t *end = POOL_END(current);
+    mlsize_t slot_words = wsize_sizeclass[size];
+
+    while (cursor + slot_words <= end) {
+      header_t header =
+        (header_t)atomic_load_relaxed((atomic_uintnat *)cursor);
+
+      if (POOL_BLOCK_FREE_HD(header)) {
+        cursor += slot_words * Wosize_hd(header);
+      } else if (!Has_status_hd(header,
+                                caml_global_heap_state.GARBAGE)
+                 && Val_hp(cursor) == candidate) {
+        return 1;
+      }
+      cursor += slot_words;
+    }
+    CAMLassert(cursor == end);
+  }
+  return 0;
+}
+
+static int large_list_contains_block(large_alloc *list, value candidate)
+{
+  for (large_alloc *current = list;
+       current != NULL;
+       current = current->next) {
+    value *header = (value *)((char *)current + LARGE_ALLOC_HEADER_SZ);
+
+    if (!Has_status_hd(Hd_hp(header), caml_global_heap_state.GARBAGE)
+        && Val_hp(header) == candidate) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+int caml_shared_heap_contains_block(
+  struct caml_heap_state *heap, value candidate)
+{
+  if (heap == NULL || !Is_block(candidate) || candidate == 0) return 0;
+
+  for (sizeclass size = 0; size < NUM_SIZECLASSES; size++) {
+    if (pool_list_contains_block(heap->avail_pools[size], candidate)
+        || pool_list_contains_block(heap->full_pools[size], candidate)
+        || pool_list_contains_block(
+             heap->unswept_avail_pools[size], candidate)
+        || pool_list_contains_block(
+             heap->unswept_full_pools[size], candidate)) {
+      return 1;
+    }
+  }
+  return large_list_contains_block(heap->swept_large, candidate)
+    || large_list_contains_block(heap->unswept_large, candidate);
+}
 
 /* You need to hold the [pool_freelist] lock to call these functions. */
 static void orphan_heap_stats_with_lock(struct caml_heap_state *);
@@ -503,6 +564,7 @@ value* caml_shared_try_alloc(struct caml_heap_state* local, mlsize_t wosize,
     caml_actor_heap_note_shared_bypass(domain_state->actor_heap);
     return NULL;
   }
+  if (CAMLunlikely(caml_actor_world_is_frozen())) return NULL;
 
   CAMLassert (wosize > 0);
   CAMLassert (tag != Infix_tag);
