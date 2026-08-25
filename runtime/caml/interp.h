@@ -29,6 +29,8 @@
    by the bytecode debugger. */
 enum caml_bytecode_stop_reason {
   CAML_BYTECODE_STOP_REDUCTIONS,
+  CAML_BYTECODE_STOP_HOST_ACTION,
+  CAML_BYTECODE_STOP_UNSUPPORTED,
   CAML_BYTECODE_STOP_VALUE,
   CAML_BYTECODE_STOP_EXCEPTION
 };
@@ -53,10 +55,12 @@ struct caml_bytecode_state {
 
 #define CAML_BYTECODE_REDUCTIONS_UNLIMITED CAML_UINTNAT_MAX
 
-/* These entry points are synchronous and Domain-local.  A suspended state
-   must remain on the Domain's current stack until the next resume.
-   Initialization may grow that stack to reserve the saved frame and
-   interpreter headroom, including for pending actions on a zero budget. */
+/* These entry points are synchronous and Domain-local. The stack named by a
+   suspended state must be installed as the Domain's current stack before the
+   next resume. Detached-stack ownership and root scanning are the caller's
+   responsibility. Initialization may grow the current stack to reserve the
+   saved frame and interpreter headroom, including for pending actions on a
+   zero budget. */
 CAMLextern void caml_bytecode_state_init(
   struct caml_bytecode_state *state,
   code_t prog, asize_t prog_size,

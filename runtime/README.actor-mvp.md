@@ -186,6 +186,41 @@ Each pointer lookup validates and walks an arena, so reference-heavy heaps can
 make full verification quadratic. Checked stores also walk allocation layouts.
 No production throughput or latency guarantee is made at this boundary.
 
+## PR 4 deterministic-scheduler boundary
+
+The internal scheduler owns a fixed slot table, one FIFO ready queue, and one
+detached bytecode stack and arena per published slot. Slot zero at generation
+zero is the root and has PID and arena owner zero. Other PIDs encode a
+generation above a 16-bit slot index. Reaping advances the generation before
+the slot is reusable, never wraps it, and permanently retires an exhausted
+slot. PID lookup checks both parts before accessing actor state.
+
+One dispatch installs exactly one actor stack and arena, disables backtrace
+recording and effect trap barriers, and runs a finite interpreter slice. The
+slice spills its accumulator, program counter, environment, extra arguments,
+and trap offset before the scheduler restores the host stack and C context.
+The scheduler refreshes the saved stack pointer after every slice because
+stack growth may replace it, verifies the outgoing arena, and appends a
+reduction-stopped actor to the ready-queue tail. The PR 4 seam proves an exact
+alternating trace for two CPU-bound actors and equal progress without explicit
+yielding.
+
+Stock pending actions are never processed with an actor stack or arena
+installed. They produce a pointer-free host-action stop and remain pending for
+the restored host. All C primitives and effect instructions are default-denied
+before entry; the denied-primitive test proves that its C body is not called.
+Actor backtraces, debugger use, and multiple Domains remain unsupported.
+
+This is still an internal scheduler over trusted, registered synthetic
+bytecode with immediate or static-atom initial state. It deliberately does not
+run host closures as actors, scan detached actor roots, contain allocation
+exhaustion,
+or audit allocating and mutation opcodes. The `Actor` module remains
+unavailable. Freeze/copy, a safe primitive and opcode subset, independent
+collection, and public lifecycle semantics remain later gates, so PR 4 makes
+neither a public-actor nor a heap-isolation claim.
+
+
 ## Isolation invariants
 
 Future runtime implementations must verify these rules in debug builds at
