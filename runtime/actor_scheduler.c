@@ -45,6 +45,7 @@ CAMLextern value caml_actor_self(value inbox);
 CAMLextern value caml_actor_yield(value unit);
 CAMLextern value caml_actor_send(value pid, value message);
 CAMLextern value caml_actor_receive(value inbox);
+CAMLextern value caml_actor_stats(value unit);
 
 struct caml_actor_slot {
   enum caml_actor_lifecycle lifecycle;
@@ -53,6 +54,7 @@ struct caml_actor_slot {
   uintnat pid;
   uintnat dispatches;
   uintnat reduction_stops;
+  struct caml_actor_unsupported unsupported;
   uint32_t ready_next;
   int queued;
   struct stack_info *stack;
@@ -75,6 +77,16 @@ struct caml_actor_scheduler {
   int root_published;
   enum caml_actor_control_request control_request;
   int test_request_minor_gc_after_switch;
+
+  uintnat total_spawned;
+  uintnat total_exited;
+  uintnat total_failed;
+  uintnat total_dispatches;
+  uintnat total_reduction_stops;
+  uintnat messages_sent;
+  uintnat messages_received;
+  uintnat messages_dropped;
+  uintnat mailbox_messages;
 
   struct stack_info *host_stack;
   int64_t host_stack_id;
@@ -103,6 +115,20 @@ struct caml_actor_prepared_send {
   struct caml_actor_envelope *envelope;
   struct caml_actor_prepared_send *next;
 };
+
+static void add_counter(uintnat *counter, uintnat amount)
+{
+  if (amount > CAML_UINTNAT_MAX - *counter) {
+    *counter = CAML_UINTNAT_MAX;
+  } else {
+    *counter += amount;
+  }
+}
+
+static void increment_counter(uintnat *counter)
+{
+  add_counter(counter, 1);
+}
 
 static int scheduler_runtime_supported(void)
 {
@@ -193,6 +219,31 @@ static int running_context_matches(
       || scheduler->current >= scheduler->capacity
       || domain->current_stack == NULL
       || domain->local_roots != NULL
+      || domain->gc_regs != NULL) {
+    return 0;
+  }
+  slot = &scheduler->slots[scheduler->current];
+  return slot->lifecycle == CAML_ACTOR_LIFECYCLE_RUNNING
+    && domain->actor_heap == slot->heap
+    && domain->current_stack->id == slot->bytecode.stack_id;
+}
+
+/* Control requests are recorded inside actor primitives, where CAMLparam may
+   temporarily make [local_roots] non-NULL. No scheduler transition happens
+   until the primitive returns and the interpreter takes the request. */
+static int current_actor_context_matches(
+  const struct caml_actor_scheduler *scheduler)
+{
+  caml_domain_state *domain = Caml_state_opt;
+  const struct caml_actor_slot *slot;
+
+  if (domain == NULL || scheduler == NULL
+      || domain != scheduler->domain
+      || domain->unique_id != scheduler->domain_unique_id
+      || domain->actor_scheduler != scheduler
+      || scheduler->current == ACTOR_SLOT_NONE
+      || scheduler->current >= scheduler->capacity
+      || domain->current_stack == NULL
       || domain->gc_regs != NULL) {
     return 0;
   }
@@ -452,9 +503,11 @@ static enum caml_actor_spawn_status spawn_code(
   slot->pid = pid;
   slot->dispatches = 0;
   slot->reduction_stops = 0;
+  memset(&slot->unsupported, 0, sizeof(slot->unsupported));
   slot->stack = stack;
   slot->heap = heap;
   if (root) scheduler->root_published = 1;
+  increment_counter(&scheduler->total_spawned);
   enqueue_tail(scheduler, index);
   *pid_out = pid;
   return CAML_ACTOR_SPAWN_OK;
@@ -693,12 +746,14 @@ int caml_actor_scheduler_commit_prepared(
   slot->pid = prepared->pid;
   slot->dispatches = 0;
   slot->reduction_stops = 0;
+  memset(&slot->unsupported, 0, sizeof(slot->unsupported));
   slot->stack = prepared->stack;
   slot->heap = prepared->heap;
   slot->bytecode = prepared->bytecode;
   prepared->stack = NULL;
   prepared->heap = NULL;
   if (root) scheduler->root_published = 1;
+  increment_counter(&scheduler->total_spawned);
   enqueue_tail(scheduler, prepared->index);
   free(prepared);
   return 1;
@@ -732,7 +787,9 @@ struct caml_actor_step caml_actor_scheduler_step(
   step.pid = slot->pid;
 
   slot->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNING;
-  slot->dispatches++;
+  increment_counter(&slot->dispatches);
+  increment_counter(&scheduler->total_dispatches);
+  memset(&slot->unsupported, 0, sizeof(slot->unsupported));
   scheduler->current = index;
   CAMLassert(scheduler->control_request == CAML_ACTOR_CONTROL_NONE);
   domain->current_stack = slot->stack;
@@ -751,6 +808,7 @@ struct caml_actor_step caml_actor_scheduler_step(
     scheduler->current = ACTOR_SLOT_NONE;
     slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
     slot->failure = CAML_ACTOR_FAILURE_INTERNAL;
+    increment_counter(&scheduler->total_failed);
     step.reason = CAML_ACTOR_STEP_FAILED;
     return step;
   }
@@ -781,6 +839,7 @@ struct caml_actor_step caml_actor_scheduler_step(
       || caml_actor_heap_shared_bypasses(slot->heap) != 0) {
     slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
     slot->failure = CAML_ACTOR_FAILURE_INVALID_HEAP;
+    increment_counter(&scheduler->total_failed);
     step.reason = CAML_ACTOR_STEP_FAILED;
     return step;
   }
@@ -788,7 +847,8 @@ struct caml_actor_step caml_actor_scheduler_step(
   switch (reason) {
     case CAML_BYTECODE_STOP_REDUCTIONS:
       slot->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNABLE;
-      slot->reduction_stops++;
+      increment_counter(&slot->reduction_stops);
+      increment_counter(&scheduler->total_reduction_stops);
       enqueue_tail(scheduler, index);
       step.reason = CAML_ACTOR_STEP_REDUCTIONS;
       break;
@@ -809,31 +869,37 @@ struct caml_actor_step caml_actor_scheduler_step(
     case CAML_BYTECODE_STOP_UNSUPPORTED:
       slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
       slot->failure = CAML_ACTOR_FAILURE_UNSUPPORTED;
+      increment_counter(&scheduler->total_failed);
       step.reason = CAML_ACTOR_STEP_FAILED;
       break;
     case CAML_BYTECODE_STOP_HEAP_EXHAUSTED:
       slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
       slot->failure = CAML_ACTOR_FAILURE_HEAP_EXHAUSTED;
+      increment_counter(&scheduler->total_failed);
       step.reason = CAML_ACTOR_STEP_FAILED;
       break;
     case CAML_BYTECODE_STOP_VALUE:
       if (Is_block(result)) {
         slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
         slot->failure = CAML_ACTOR_FAILURE_INVALID_RESULT;
+        increment_counter(&scheduler->total_failed);
         step.reason = CAML_ACTOR_STEP_FAILED;
       } else {
         slot->lifecycle = CAML_ACTOR_LIFECYCLE_EXITED;
+        increment_counter(&scheduler->total_exited);
         step.reason = CAML_ACTOR_STEP_EXITED;
       }
       break;
     case CAML_BYTECODE_STOP_EXCEPTION:
       slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
       slot->failure = CAML_ACTOR_FAILURE_EXCEPTION;
+      increment_counter(&scheduler->total_failed);
       step.reason = CAML_ACTOR_STEP_FAILED;
       break;
     default:
       slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
       slot->failure = CAML_ACTOR_FAILURE_INTERNAL;
+      increment_counter(&scheduler->total_failed);
       step.reason = CAML_ACTOR_STEP_FAILED;
       break;
   }
@@ -942,7 +1008,8 @@ int caml_actor_scheduler_commit_send(
   }
   slot = &scheduler->slots[prepared->target_index];
   if (slot->pid != prepared->target_pid
-      || !caml_actor_wire_verify(prepared->envelope)) {
+      || !caml_actor_wire_verify(prepared->envelope)
+      || scheduler->mailbox_messages == CAML_UINTNAT_MAX) {
     caml_actor_scheduler_abort_send(prepared);
     return 0;
   }
@@ -955,6 +1022,8 @@ int caml_actor_scheduler_commit_send(
   }
   slot->mailbox_tail = prepared;
   slot->mailbox_length++;
+  increment_counter(&scheduler->messages_sent);
+  scheduler->mailbox_messages++;
   if (slot->lifecycle == CAML_ACTOR_LIFECYCLE_BLOCKED) {
     slot->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNABLE;
     enqueue_tail(scheduler, prepared->target_index);
@@ -995,6 +1064,8 @@ int caml_actor_scheduler_consume_current_message(
   slot->mailbox_head = message->next;
   if (slot->mailbox_head == NULL) slot->mailbox_tail = NULL;
   slot->mailbox_length--;
+  increment_counter(&scheduler->messages_received);
+  scheduler->mailbox_messages--;
   caml_actor_wire_destroy(message->envelope);
   free(message);
 #ifdef DEBUG
@@ -1017,7 +1088,48 @@ enum caml_actor_pid_lookup caml_actor_scheduler_snapshot(
   snapshot->pid = slot->pid;
   snapshot->dispatches = slot->dispatches;
   snapshot->reduction_stops = slot->reduction_stops;
+  snapshot->unsupported = slot->unsupported;
   return lookup;
+}
+
+int caml_actor_scheduler_stats(
+  const struct caml_actor_scheduler *scheduler,
+  struct caml_actor_scheduler_stats *stats)
+{
+  if (scheduler == NULL || stats == NULL
+      || !running_context_matches(scheduler)) {
+    return 0;
+  }
+
+  memset(stats, 0, sizeof(*stats));
+  stats->total_spawned = scheduler->total_spawned;
+  stats->total_exited = scheduler->total_exited;
+  stats->total_failed = scheduler->total_failed;
+  stats->total_dispatches = scheduler->total_dispatches;
+  stats->total_reduction_stops = scheduler->total_reduction_stops;
+  stats->messages_sent = scheduler->messages_sent;
+  stats->messages_received = scheduler->messages_received;
+  stats->messages_dropped = scheduler->messages_dropped;
+  stats->mailbox_messages = scheduler->mailbox_messages;
+
+  for (uintnat index = 0; index < scheduler->capacity; index++) {
+    const struct caml_actor_slot *slot = &scheduler->slots[index];
+
+    switch (slot->lifecycle) {
+    case CAML_ACTOR_LIFECYCLE_RUNNABLE:
+    case CAML_ACTOR_LIFECYCLE_RUNNING:
+      stats->live_actors++;
+      stats->runnable_actors++;
+      break;
+    case CAML_ACTOR_LIFECYCLE_BLOCKED:
+      stats->live_actors++;
+      stats->blocked_actors++;
+      break;
+    default:
+      break;
+    }
+  }
+  return 1;
 }
 
 int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,
@@ -1039,11 +1151,15 @@ int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,
   index = (uint32_t)(pid & CAML_ACTOR_PID_INDEX_MASK);
   slot = &scheduler->slots[index];
   CAMLassert(!slot->queued);
+  CAMLassert(scheduler->mailbox_messages >= slot->mailbox_length);
+  add_counter(&scheduler->messages_dropped, slot->mailbox_length);
+  scheduler->mailbox_messages -= slot->mailbox_length;
   release_slot_resources(slot);
   slot->failure = CAML_ACTOR_FAILURE_NONE;
   slot->pid = 0;
   slot->dispatches = 0;
   slot->reduction_stops = 0;
+  memset(&slot->unsupported, 0, sizeof(slot->unsupported));
   slot->ready_next = ACTOR_SLOT_NONE;
   if (index == 0 || slot->generation >= max_pid_generation()) {
     slot->lifecycle = CAML_ACTOR_LIFECYCLE_RETIRED;
@@ -1091,7 +1207,7 @@ static int request_control(enum caml_actor_control_request request)
 
   if (domain == NULL || domain->actor_scheduler == NULL) return 0;
   scheduler = domain->actor_scheduler;
-  if (!running_context_matches(scheduler)
+  if (!current_actor_context_matches(scheduler)
       || scheduler->control_request != CAML_ACTOR_CONTROL_NONE) {
     return 0;
   }
@@ -1117,6 +1233,34 @@ int caml_actor_scheduler_request_unsupported(void)
 int caml_actor_scheduler_request_heap_exhausted(void)
 {
   return request_control(CAML_ACTOR_CONTROL_HEAP_EXHAUSTED);
+}
+
+static void record_unsupported(
+  enum caml_actor_unsupported_kind kind, uintnat operation, int arity)
+{
+  caml_domain_state *domain = Caml_state_opt;
+  struct caml_actor_scheduler *scheduler;
+  struct caml_actor_slot *slot;
+
+  if (domain == NULL || domain->actor_scheduler == NULL) return;
+  scheduler = domain->actor_scheduler;
+  if (!current_actor_context_matches(scheduler)) return;
+  slot = &scheduler->slots[scheduler->current];
+  if (slot->unsupported.kind != CAML_ACTOR_UNSUPPORTED_NONE) return;
+  slot->unsupported.kind = kind;
+  slot->unsupported.operation = operation;
+  slot->unsupported.arity = arity;
+}
+
+void caml_actor_scheduler_record_unsupported_opcode(uintnat opcode)
+{
+  record_unsupported(CAML_ACTOR_UNSUPPORTED_OPCODE, opcode, 0);
+}
+
+void caml_actor_scheduler_record_unsupported_primitive(
+  uintnat primitive, int arity)
+{
+  record_unsupported(CAML_ACTOR_UNSUPPORTED_PRIMITIVE, primitive, arity);
 }
 
 enum caml_actor_control_request
@@ -1150,7 +1294,8 @@ int caml_actor_scheduler_primitive_allowed(uintnat primitive, int arity)
     return function == (c_primitive)caml_actor_spawn
       || function == (c_primitive)caml_actor_self
       || function == (c_primitive)caml_actor_yield
-      || function == (c_primitive)caml_actor_receive;
+      || function == (c_primitive)caml_actor_receive
+      || function == (c_primitive)caml_actor_stats;
   }
   return arity == 2
     && (function == (c_primitive)caml_int_compare
@@ -1306,6 +1451,15 @@ enum caml_actor_pid_lookup caml_actor_scheduler_snapshot(
   return CAML_ACTOR_PID_MISSING;
 }
 
+int caml_actor_scheduler_stats(
+  const struct caml_actor_scheduler *scheduler,
+  struct caml_actor_scheduler_stats *stats)
+{
+  (void)scheduler;
+  if (stats != NULL) memset(stats, 0, sizeof(*stats));
+  return 0;
+}
+
 int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,
                                 uintnat pid)
 {
@@ -1348,6 +1502,18 @@ int caml_actor_scheduler_request_unsupported(void)
 int caml_actor_scheduler_request_heap_exhausted(void)
 {
   return 0;
+}
+
+void caml_actor_scheduler_record_unsupported_opcode(uintnat opcode)
+{
+  (void)opcode;
+}
+
+void caml_actor_scheduler_record_unsupported_primitive(
+  uintnat primitive, int arity)
+{
+  (void)primitive;
+  (void)arity;
 }
 
 enum caml_actor_control_request

@@ -42,6 +42,21 @@ module Actor : sig
     | Message_too_large
     | Unsupported_message of string
 
+  type stats = {
+    live_actors : int;
+    runnable_actors : int;
+    blocked_actors : int;
+    total_spawned : int;
+    total_exited : int;
+    total_failed : int;
+    total_dispatches : int;
+    total_reduction_stops : int;
+    messages_sent : int;
+    messages_received : int;
+    messages_dropped : int;
+    mailbox_messages : int;
+  }
+
   val run : (unit inbox -> unit) -> (unit, run_error) result
   val spawn : ('message inbox -> unit) ->
     ('message pid, spawn_error) result
@@ -49,6 +64,7 @@ module Actor : sig
   val send : 'message pid -> 'message -> (unit, send_error) result
   val receive : 'message inbox -> 'message
   val yield : unit -> unit
+  val stats : unit -> stats
 end
 ```
 
@@ -56,6 +72,11 @@ These constructors are part of the PR 0 contract. Adding an error case later
 is an API change and requires a contract revision. Error strings are copied to
 the host only after they have a pointer-free representation; actor heap values
 never escape through an error.
+
+`stats` is available only inside the actor world. Its lifetime counters
+saturate at `max_int`; `runnable_actors` includes the actor taking the
+snapshot, and `messages_dropped` counts unread envelopes discarded at actor
+retirement.
 
 ## Execution semantics
 
