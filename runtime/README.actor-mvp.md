@@ -381,8 +381,34 @@ moves, forces collection immediately before decoding a large string envelope,
 and checks that the waiting actor's state is unchanged while its peer collects.
 Together with the owner verifier, stock-allocation fence, closure copier, and
 pointer-free mailbox proofs in the lower stack, this is the first layer that
-meets the MVP's heap-isolation claim. Failure hardening and stress/replay remain
-the PR 7 completion gate.
+meets the MVP's heap-isolation claim. The final PR 7 layer adds the containment,
+retirement, stress/replay, and development-loop gate described next.
+
+### Failure containment and retired heaps
+
+An uncaught exception, unsupported operation, invalid-heap checkpoint, or
+contained heap-quota failure transitions only the current child to `failed`.
+The host scheduler records a pointer-free failure category, retires that child,
+destroys its mailbox, stack, and heap, advances the PID generation, and keeps
+dispatching peers. The same failures in actor zero stop the actor world and are
+converted to `Root_failed` or `Root_heap_exhausted` only after all actor-owned
+resources have been destroyed and the host heap has thawed. An empty ready
+queue with blocked actors follows the same cleanup path and returns `Deadlock`.
+
+Debug runtimes decommit both semispaces of each destroyed actor and retain the
+eight most recent address reservations as `PROT_NONE` quarantine mappings.
+This makes an accidental stale heap dereference fail deterministically while
+bounding retained virtual address space; the oldest quarantine entry is
+unmapped when the ring fills. Normal and instrumented runtimes unmap retired
+heaps immediately.
+
+The public failure-containment test forces child exception and live-heap quota
+failure alongside a healthy peer, then checks that all three PIDs are stale.
+It also runs fresh actor worlds after root exception, root heap exhaustion, and
+deadlock to prove cleanup and thaw are reusable. A seeded 24-child stress test
+mixes exception, heap-exhaustion, and normal-report actions and accepts a
+canonical `ACTOR_TRACE` replay. See `HACKING.actor-mvp.md` for the fast build,
+test, debug, and replay loop.
 
 ## Isolation invariants
 

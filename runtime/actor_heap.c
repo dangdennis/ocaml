@@ -53,6 +53,20 @@ struct caml_actor_heap {
 static struct caml_actor_heap *actor_heaps;
 static caml_plat_mutex actor_heaps_lock = CAML_PLAT_MUTEX_INITIALIZER;
 
+#ifdef DEBUG
+#define ACTOR_HEAP_QUARANTINE_CAPACITY 8
+
+struct actor_heap_quarantine_entry {
+  char *mapping;
+  uintnat mapping_bytes;
+};
+
+static struct actor_heap_quarantine_entry
+  actor_heap_quarantine[ACTOR_HEAP_QUARANTINE_CAPACITY];
+static uintnat actor_heap_quarantine_count;
+static uintnat actor_heap_quarantine_next;
+#endif
+
 struct actor_value_lookup {
   struct caml_actor_heap *heap;
   value canonical;
@@ -100,6 +114,30 @@ static int actor_runtime_supported(void)
   return 0;
 #else
   return 1;
+#endif
+}
+
+static void retire_actor_mapping(struct caml_actor_heap *heap)
+{
+#ifdef DEBUG
+  struct actor_heap_quarantine_entry *entry =
+    &actor_heap_quarantine[actor_heap_quarantine_next];
+  uintnat committed_bytes =
+    (heap->mapping_bytes - 3 * caml_plat_pagesize) / 2;
+
+  caml_mem_decommit(heap->data_start[0], committed_bytes);
+  caml_mem_decommit(heap->data_start[1], committed_bytes);
+  if (actor_heap_quarantine_count == ACTOR_HEAP_QUARANTINE_CAPACITY) {
+    caml_mem_unmap(entry->mapping, entry->mapping_bytes);
+  } else {
+    actor_heap_quarantine_count++;
+  }
+  entry->mapping = heap->mapping;
+  entry->mapping_bytes = heap->mapping_bytes;
+  actor_heap_quarantine_next =
+    (actor_heap_quarantine_next + 1) % ACTOR_HEAP_QUARANTINE_CAPACITY;
+#else
+  caml_mem_unmap(heap->mapping, heap->mapping_bytes);
 #endif
 }
 
@@ -760,7 +798,7 @@ void caml_actor_heap_destroy(struct caml_actor_heap *heap)
 
   if (!found) caml_fatal_error("attempt to destroy an unknown actor heap");
 
-  caml_mem_unmap(heap->mapping, heap->mapping_bytes);
+  retire_actor_mapping(heap);
   free(heap->worklist);
   free(heap->forwarding);
   free(heap->shadow_headers[1]);
