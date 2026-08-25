@@ -18,9 +18,8 @@
     cooperative yielding on Linux x86-64 bytecode runtimes. Native code and
     other platforms report [Unsupported_runtime] from {!run}.
 
-    An [inbox] is currently an actor identity capability supplied to an actor
-    entry function. FIFO [send] and [receive] operations are intentionally not
-    exposed until the pointer-free mailbox stage in PR 5. *)
+    An [inbox] is an actor identity capability supplied to an actor entry
+    function. Messages are copied through pointer-free FIFO envelopes. *)
 
 type 'message pid
 (** The generation-tagged identity of an actor. *)
@@ -58,6 +57,17 @@ external spawn : ('message inbox -> unit) ->
 external self : 'message inbox -> 'message pid
   = "caml_actor_self"
 (** [self inbox] returns the identity associated with [inbox]. *)
+
+external send : 'message pid -> 'message ->
+  (unit, send_error) result
+  = "caml_actor_send"
+(** [send pid message] transactionally copies [message] into [pid]'s FIFO
+    mailbox. Unsupported values and over-quota graphs are not published. *)
+
+external receive : 'message inbox -> 'message
+  = "caml_actor_receive"
+(** [receive inbox] returns the oldest message, blocking only the current
+    actor while its mailbox is empty. *)
 
 external yield : unit -> unit
   = "caml_actor_yield"

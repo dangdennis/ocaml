@@ -1,0 +1,5 @@
+mailbox FIFO and wakeup: ok
+message graph copy: ok
+unsupported send rejection: ok
+message quota rejection: ok
+mailbox lifecycle: ok
