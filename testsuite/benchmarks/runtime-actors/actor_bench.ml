@@ -34,7 +34,7 @@ let measure name operations workload =
     if elapsed = 0. then infinity
     else float_of_int operations /. elapsed
   in
-  Printf.printf "%s\t%d\t%.6f\t%.0f\n%!" name operations elapsed rate
+  Printf.printf "%s,%d,%.6f,%.0f\n%!" name operations elapsed rate
 
 let pure_loop count =
   let rec loop remaining accumulator =
@@ -136,7 +136,7 @@ let graph_copy count =
     done))
 
 let () =
-  print_endline "benchmark\toperations\tseconds\toperations_per_second";
+  print_endline "benchmark,operations,seconds,operations_per_second";
   let pure_operations = iterations 1_000_000 in
   measure "pure_loop" pure_operations (fun () -> pure_loop pure_operations);
   measure "actor_pure_loop" pure_operations
