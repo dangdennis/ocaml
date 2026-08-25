@@ -22,5 +22,5 @@ Median operations per second:
 On this host the actor-world integer loop delivered 56% of the ordinary
 bytecode loop rate. That number includes scheduler reduction accounting and
 world entry/exit; it is not a cross-machine performance claim. Raw samples
-are in `baseline.tsv`. Re-run the documented command on the same idle machine
+are in `baseline.csv`. Re-run the documented command on the same idle machine
 before treating a difference as a regression.
