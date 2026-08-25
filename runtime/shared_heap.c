@@ -148,6 +148,68 @@ static int large_list_contains_block(large_alloc *list, value candidate)
   return 0;
 }
 
+static int pool_list_find_block(pool *list, value candidate,
+                                value *block, mlsize_t *offset_bytes)
+{
+  uintptr_t address = (uintptr_t)candidate;
+
+  for (pool *current = list; current != NULL; current = current->next) {
+    sizeclass size = current->sz;
+    header_t *cursor = POOL_FIRST_BLOCK(current, size);
+    header_t *end = POOL_END(current);
+    mlsize_t slot_words = wsize_sizeclass[size];
+
+    while (cursor + slot_words <= end) {
+      header_t header =
+        (header_t)atomic_load_relaxed((atomic_uintnat *)cursor);
+
+      if (POOL_BLOCK_FREE_HD(header)) {
+        cursor += slot_words * Wosize_hd(header);
+      } else if (!Has_status_hd(header,
+                                caml_global_heap_state.GARBAGE)
+                 && Whsize_wosize(Wosize_hd(header)) <= slot_words) {
+        value base = Val_hp(cursor);
+        uintptr_t start = (uintptr_t)base;
+        uintptr_t finish = start + Bsize_wsize(Wosize_hd(header));
+
+        if (address >= start && address < finish
+            && (address - start) % sizeof(value) == 0) {
+          *block = base;
+          *offset_bytes = address - start;
+          return 1;
+        }
+      }
+      cursor += slot_words;
+    }
+    CAMLassert(cursor == end);
+  }
+  return 0;
+}
+
+static int large_list_find_block(large_alloc *list, value candidate,
+                                 value *block, mlsize_t *offset_bytes)
+{
+  uintptr_t address = (uintptr_t)candidate;
+
+  for (large_alloc *current = list;
+       current != NULL; current = current->next) {
+    value *header = (value *)((char *)current + LARGE_ALLOC_HEADER_SZ);
+    header_t hd = Hd_hp(header);
+    value base = Val_hp(header);
+    uintptr_t start = (uintptr_t)base;
+    uintptr_t finish = start + Bsize_wsize(Wosize_hd(hd));
+
+    if (!Has_status_hd(hd, caml_global_heap_state.GARBAGE)
+        && address >= start && address < finish
+        && (address - start) % sizeof(value) == 0) {
+      *block = base;
+      *offset_bytes = address - start;
+      return 1;
+    }
+  }
+  return 0;
+}
+
 int caml_shared_heap_contains_block(
   struct caml_heap_state *heap, value candidate)
 {
@@ -165,6 +227,37 @@ int caml_shared_heap_contains_block(
   }
   return large_list_contains_block(heap->swept_large, candidate)
     || large_list_contains_block(heap->unswept_large, candidate);
+}
+
+int caml_shared_heap_find_block(
+  struct caml_heap_state *heap, value candidate,
+  value *block, mlsize_t *offset_bytes)
+{
+  if (block != NULL) *block = 0;
+  if (offset_bytes != NULL) *offset_bytes = 0;
+  if (heap == NULL || block == NULL || offset_bytes == NULL
+      || !Is_block(candidate) || candidate == 0) {
+    return 0;
+  }
+
+  for (sizeclass size = 0; size < NUM_SIZECLASSES; size++) {
+    if (pool_list_find_block(
+          heap->avail_pools[size], candidate, block, offset_bytes)
+        || pool_list_find_block(
+             heap->full_pools[size], candidate, block, offset_bytes)
+        || pool_list_find_block(
+             heap->unswept_avail_pools[size], candidate,
+             block, offset_bytes)
+        || pool_list_find_block(
+             heap->unswept_full_pools[size], candidate,
+             block, offset_bytes)) {
+      return 1;
+    }
+  }
+  return large_list_find_block(
+           heap->swept_large, candidate, block, offset_bytes)
+    || large_list_find_block(
+         heap->unswept_large, candidate, block, offset_bytes);
 }
 
 /* You need to hold the [pool_freelist] lock to call these functions. */
