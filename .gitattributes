@@ -45,7 +45,6 @@
 #/Changes                 merge=union
 
 testsuite/Makefile       export-subst
-testsuite/benchmarks/runtime-actors/*.tsv typo.tab typo.missing-header
 
 # Files and directories excluded from git-generated tarballs.
 .github                  export-ignore

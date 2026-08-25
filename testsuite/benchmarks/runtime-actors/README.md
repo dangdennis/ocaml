@@ -15,7 +15,7 @@ cp testsuite/benchmarks/runtime-actors/actor_bench.ml "$bench_dir/"
 ACTOR_BENCH_SCALE=1 ./runtime/ocamlrun "$bench_dir/actor_bench.byte"
 ```
 
-The output is tab-separated and includes operation count, elapsed CPU time,
+The output is comma-separated and includes operation count, elapsed CPU time,
 and operations per second. The two `pure_loop` rows expose actor-world
 overhead for the same integer workload; ping-pong and graph-copy operations
 are labeled as round trips. Run several samples on the same idle machine and
