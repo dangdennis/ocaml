@@ -48,6 +48,7 @@ enum caml_actor_failure {
   CAML_ACTOR_FAILURE_NONE = 0,
   CAML_ACTOR_FAILURE_EXCEPTION,
   CAML_ACTOR_FAILURE_UNSUPPORTED,
+  CAML_ACTOR_FAILURE_HEAP_EXHAUSTED,
   CAML_ACTOR_FAILURE_INVALID_HEAP,
   CAML_ACTOR_FAILURE_INVALID_RESULT,
   CAML_ACTOR_FAILURE_INTERNAL
@@ -108,8 +109,7 @@ CAMLextern int caml_actor_scheduler_retire(
 CAMLextern void caml_actor_scheduler_test_request_minor_gc_after_switch(
   struct caml_actor_scheduler *scheduler);
 
-/* Interpreter hooks.  PR 3 rejects every C primitive and effect operation
-   while an internal actor is running. */
+/* Interpreter hooks. */
 CAMLextern int caml_actor_scheduler_is_running(void);
 CAMLextern int caml_actor_scheduler_primitive_allowed(uintnat primitive);
 
