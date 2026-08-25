@@ -341,6 +341,49 @@ arena space permanently, and a receive whose decoded graph does not fit kills
 only that actor with contained heap exhaustion. Independent moving collection
 and the full heap-isolation claim remain gated on PR 6.
 
+## PR 6 private copying collector
+
+PR 6 replaces each fixed bump arena with two private, guarded semispaces of
+the actor's full heap quota. Allocation remains downward-growing in the active
+space. When an allocation does not fit, a stop-the-scheduler copying collection
+traces only the current actor and swaps the two spaces. The other space has its
+own shadow-header ledger; forwarding and worklist tables are allocated when the
+actor heap is created, so collection never needs fallible metadata allocation
+after it starts rewriting roots.
+
+Before moving anything, the collector verifies the complete source heap and
+all active roots. It scans the current actor's C local roots, bytecode stack,
+and saved GC-register parameter through the normal local-root scanner. Direct
+bytecode allocations first spill the accumulator and environment into the
+actor stack, then restore their moved values after collection. Ordinary
+scanned fields are forwarded iteratively. Closures retain verified immutable
+code and infix entries while only their environments are traced. Strings,
+bytes, floats, and flat float arrays are copied as unscanned payloads.
+
+Every copied block is indexed by its source-space header offset. This preserves
+cycles, aliases, and valid infix identities without installing forwarding
+headers in the source graph. The collector rejects a root or edge owned by any
+other actor and never scans another actor's stack or heap. Before returning, it
+verifies the destination heap and proves that every active root now names the
+new semispace or approved frozen state. The abandoned space's shadow ledger is
+then cleared, making stale pointers fail ownership checks.
+
+Message receive reserves the envelope's complete graph size before allocating
+decoder targets. Reservation may first collect the receiver; after it succeeds,
+the decoder cannot trigger another move while its temporary C target table is
+live. If the post-collection live graph plus the complete message still exceeds
+the fixed actor quota, only that actor receives the contained heap-exhaustion
+outcome.
+
+The moving-GC acceptance test allocates several times each actor's quota in two
+actors, preserves closure environments, aliases, and a cycle across repeated
+moves, forces collection immediately before decoding a large string envelope,
+and checks that the waiting actor's state is unchanged while its peer collects.
+Together with the owner verifier, stock-allocation fence, closure copier, and
+pointer-free mailbox proofs in the lower stack, this is the first layer that
+meets the MVP's heap-isolation claim. Failure hardening and stress/replay remain
+the PR 7 completion gate.
+
 ## Isolation invariants
 
 Debug builds verify these rules at every mandatory checkpoint:
