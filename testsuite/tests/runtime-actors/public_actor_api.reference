@@ -1,0 +1,5 @@
+public actor entry: ok
+spawn capture copy: ok
+global mutation fence: ok
+capture rejection: ok
+public actor failures: ok
