@@ -26,7 +26,7 @@ extern const c_primitive caml_builtin_cprim[];
 extern const char * const caml_names_of_builtin_cprim[];
 
 extern struct ext_table caml_prim_table;
-#ifdef DEBUG
+#ifndef NATIVE_CODE
 extern struct ext_table caml_prim_name_table;
 #endif
 

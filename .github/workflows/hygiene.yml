@@ -5,6 +5,7 @@ on:
       - '4.**'
       - '5.**'
       - 'actor-mvp/**'
+      - 'actor-real/**'
       - 'trunk'
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
