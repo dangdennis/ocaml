@@ -18,6 +18,7 @@
 /* The bytecode interpreter */
 #include <stdio.h>
 #include "caml/alloc.h"
+#include "caml/actor_scheduler.h"
 #include "caml/backtrace.h"
 #include "caml/callback.h"
 #include "caml/codefrag.h"
@@ -130,6 +131,10 @@ sp is a local copy of the global variable Caml_state->current_stack->sp. */
      CAMLassert(sp[0] == accu); \
      CAMLassert(sp[2] == env); \
      sp += 4; }
+
+#define Actor_scheduler_running() \
+  (CAMLunlikely(domain_state->actor_scheduler != NULL) \
+   && caml_actor_scheduler_is_running())
 
 #ifdef THREADED_CODE
 #define Restart_curr_instr \
@@ -317,6 +322,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
   int limit_reductions =
     max_reductions != CAML_BYTECODE_REDUCTIONS_UNLIMITED;
   uintnat reductions_left = max_reductions;
+  enum caml_bytecode_stop_reason suspend_reason;
   volatile value raise_exn_bucket = Val_unit;
   struct longjmp_buffer raise_buf;
   value resume_fn, resume_arg;
@@ -414,7 +420,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
  next_instr:
   if (limit_reductions) {
     if (reductions_left == 0) {
-      if (caml_check_pending_actions()) goto process_signal;
+      if (caml_check_pending_actions()) {
+        if (Actor_scheduler_running()) goto host_action;
+        goto process_signal;
+      }
       goto reduction_limit;
     }
     reductions_left--;
@@ -429,7 +438,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
   while(1) {
     if (limit_reductions) {
       if (reductions_left == 0) {
-        if (caml_check_pending_actions()) goto process_signal;
+        if (caml_check_pending_actions()) {
+          if (Actor_scheduler_running()) goto host_action;
+          goto process_signal;
+        }
         goto reduction_limit;
       }
       reductions_left--;
@@ -1022,6 +1034,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
            handler triggers an exception, the exception is trapped
            by the current try...with, not the enclosing one. */
         pc--; /* restart the POPTRAP after processing the signal */
+        if (Actor_scheduler_running()) goto host_action;
         goto process_signal;
       }
       domain_state->trap_sp_off = Long_val(Trap_link(sp));
@@ -1107,8 +1120,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 /* Signal handling */
 
     Instruct(CHECK_SIGNALS):    /* accu not preserved */
-      if (Caml_check_gc_interrupt(domain_state))
+      if (Caml_check_gc_interrupt(domain_state)) {
+        if (Actor_scheduler_running()) goto host_action;
         goto process_signal;
+      }
       Next;
 
     process_signal:
@@ -1120,12 +1135,18 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 /* Calling C functions */
 
     Instruct(C_CALL1):
+      if (Actor_scheduler_running()
+          && !caml_actor_scheduler_primitive_allowed(*pc))
+        goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive1(*pc)(accu);
       Restore_after_c_call;
       pc++;
       Next;
     Instruct(C_CALL2):
+      if (Actor_scheduler_running()
+          && !caml_actor_scheduler_primitive_allowed(*pc))
+        goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive2(*pc)(accu, sp[2]);
       Restore_after_c_call;
@@ -1133,6 +1154,9 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       pc++;
       Next;
     Instruct(C_CALL3):
+      if (Actor_scheduler_running()
+          && !caml_actor_scheduler_primitive_allowed(*pc))
+        goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive3(*pc)(accu, sp[2], sp[3]);
       Restore_after_c_call;
@@ -1140,6 +1164,9 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       pc++;
       Next;
     Instruct(C_CALL4):
+      if (Actor_scheduler_running()
+          && !caml_actor_scheduler_primitive_allowed(*pc))
+        goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive4(*pc)(accu, sp[2], sp[3], sp[4]);
       Restore_after_c_call;
@@ -1147,6 +1174,9 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       pc++;
       Next;
     Instruct(C_CALL5):
+      if (Actor_scheduler_running()
+          && !caml_actor_scheduler_primitive_allowed(*pc))
+        goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive5(*pc)(accu, sp[2], sp[3], sp[4], sp[5]);
       Restore_after_c_call;
@@ -1155,6 +1185,9 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       Next;
     Instruct(C_CALLN): {
       int nargs = *pc++;
+      if (Actor_scheduler_running()
+          && !caml_actor_scheduler_primitive_allowed(*pc))
+        goto unsupported_operation;
       *--sp = accu;
       Setup_for_c_call;
       accu = PrimitiveN(*pc)(sp + 2, nargs);
@@ -1341,6 +1374,17 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 /* Debugging and machine control */
 
     reduction_limit:
+      suspend_reason = CAML_BYTECODE_STOP_REDUCTIONS;
+      goto suspend_interpreter;
+
+    host_action:
+      suspend_reason = CAML_BYTECODE_STOP_HOST_ACTION;
+      goto suspend_interpreter;
+
+    unsupported_operation:
+      suspend_reason = CAML_BYTECODE_STOP_UNSUPPORTED;
+
+    suspend_interpreter:
       CAMLassert(state->phase == CAML_BYTECODE_STATE_RUNNING);
       CAMLassert(domain_state->local_roots == initial_local_roots);
       CAMLassert(domain_state->gc_regs == NULL);
@@ -1361,7 +1405,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       domain_state->external_raise = initial_external_raise;
       domain_state->trap_sp_off = state->return_trap_sp_off;
       *result = Val_unit;
-      return CAML_BYTECODE_STOP_REDUCTIONS;
+      return suspend_reason;
 
     Instruct(STOP):
       domain_state->external_raise = initial_external_raise;
@@ -1391,6 +1435,8 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 /* Context switching */
 
     Instruct(RESUME):
+      if (Actor_scheduler_running())
+        goto unsupported_operation;
       resume_fn = sp[0];
       resume_arg = sp[1];
       resume_tail = Ptr_val(sp[2]);
@@ -1427,6 +1473,8 @@ do_resume: {
     }
 
     Instruct(RESUMETERM):
+      if (Actor_scheduler_running())
+        goto unsupported_operation;
       resume_fn = sp[0];
       resume_arg = sp[1];
       resume_tail = Ptr_val(sp[2]);
@@ -1437,6 +1485,8 @@ do_resume: {
 
 
     Instruct(PERFORM): {
+      if (Actor_scheduler_running())
+        goto unsupported_operation;
       value cont;
       struct stack_info* old_stack = domain_state->current_stack;
       struct stack_info* parent_stack = Stack_parent(old_stack);
@@ -1478,6 +1528,8 @@ do_resume: {
     }
 
     Instruct(REPERFORMTERM): {
+      if (Actor_scheduler_running())
+        goto unsupported_operation;
       value eff = accu;
       value cont = sp[0];
       struct stack_info* cont_tail = Ptr_val(sp[1]);
@@ -1559,7 +1611,8 @@ value caml_bytecode_interpreter(code_t prog, asize_t prog_size,
     &state, prog, prog_size, initial_env, initial_extra_args);
   reason = caml_bytecode_interpreter_slice(
     &state, CAML_BYTECODE_REDUCTIONS_UNLIMITED, &result);
-  CAMLassert(reason != CAML_BYTECODE_STOP_REDUCTIONS);
+  CAMLassert(reason == CAML_BYTECODE_STOP_VALUE
+             || reason == CAML_BYTECODE_STOP_EXCEPTION);
   if (reason == CAML_BYTECODE_STOP_EXCEPTION)
     return Make_exception_result(result);
   return result;
