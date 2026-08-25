@@ -295,6 +295,52 @@ collection and therefore does not make the heap-isolated-actor MVP claim. Its
 gate is narrower: supported lexical captures are copied, module-global access
 is rejected, and no supported spawn can create a cross-actor mutable pointer.
 
+## PR 5 pointer-free mailbox boundary
+
+PR 5 completes the MVP API surface with `Actor.send` and FIFO `receive`. A
+mailbox entry owns a dedicated wire envelope in scheduler-managed C memory.
+The envelope represents values with explicit token kinds, signed immediates,
+static-atom tags, node indices, block tags and sizes, and copied raw bytes. It
+contains no OCaml `value` field and no pointer into a sender or receiver heap.
+
+The encoder iteratively discovers the complete message graph before creating
+an envelope. Ordinary scanned blocks become indexed nodes; strings, bytes,
+floats, and flat float arrays become raw payloads. Node references preserve
+cycles and aliases inside the message without preserving physical identity
+across actors. Closures, infix entries, lazy and forcing states, continuations,
+objects, custom and abstract blocks, weak structures, foreign heap values,
+malformed blocks, and over-quota graphs are rejected before publication.
+
+Send publication has its own prepare/commit transaction. The destination PID
+and generation are checked, the completed envelope and mailbox link remain
+unpublished, and the sender allocates its public `Ok ()` result before commit.
+Commit appends exactly one entry and wakes a blocked destination at the ready
+queue tail. A dead, exited, failed, retired, or stale PID returns
+`No_such_actor`; an unsupported or over-quota send changes no mailbox.
+
+`receive` peeks at the oldest envelope and preflights its complete decoded
+word count against the receiver's remaining arena quota before allocating any
+block. It allocates every target node in the receiver heap, resolves indices,
+verifies the resulting heap, and only then consumes and frees the envelope.
+The wire seam destroys the complete sender heap before decoding and still
+proves the decoded graph's contents, aliases, and cycles.
+
+On an empty mailbox the receive primitive returns its inbox unchanged and
+requests a block only after its `C_CALL1` has completed. The interpreter
+rewinds that exact call before spilling the actor state. A later send marks the
+actor runnable, and resume retries `receive` against the now nonempty mailbox.
+No C frame or heap pointer is retained while blocked. If no actor is runnable,
+the scheduler reports idle and `run` maps the all-blocked state to `Deadlock`.
+
+Debug builds audit every mailbox link and envelope at send, receive, and
+context-switch boundaries. Actor retirement and scheduler destruction free
+all queued envelopes before releasing the actor slot or thawing the host.
+
+PR 5 still uses the fixed bump arenas from PR 2. Successful decode consumes
+arena space permanently, and a receive whose decoded graph does not fit kills
+only that actor with contained heap exhaustion. Independent moving collection
+and the full heap-isolation claim remain gated on PR 6.
+
 ## Isolation invariants
 
 Debug builds verify these rules at every mandatory checkpoint:

@@ -1257,6 +1257,12 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
           caml_actor_scheduler_take_control_request();
 
         if (request == CAML_ACTOR_CONTROL_YIELD) goto actor_yield;
+        if (request == CAML_ACTOR_CONTROL_BLOCKED) {
+          /* [receive] returned its inbox unchanged.  Retry this exact
+             C_CALL1 after the destination mailbox wakes the actor. */
+          pc -= 2;
+          goto actor_blocked;
+        }
         if (request == CAML_ACTOR_CONTROL_UNSUPPORTED)
           goto unsupported_operation;
         if (request == CAML_ACTOR_CONTROL_HEAP_EXHAUSTED)
@@ -1522,6 +1528,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 
     actor_yield:
       suspend_reason = CAML_BYTECODE_STOP_YIELD;
+      goto suspend_interpreter;
+
+    actor_blocked:
+      suspend_reason = CAML_BYTECODE_STOP_BLOCKED;
       goto suspend_interpreter;
 
     host_action:

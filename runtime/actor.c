@@ -18,6 +18,7 @@
 
 #include "caml/actor_heap.h"
 #include "caml/actor_scheduler.h"
+#include "caml/actor_wire.h"
 #include "caml/actor_world.h"
 #include "caml/alloc.h"
 #include "caml/domain_state.h"
@@ -29,6 +30,7 @@
 #define ACTOR_MVP_REDUCTIONS 1000
 #define ACTOR_MVP_ROOT_HEAP_WORDS ((mlsize_t)1 << 18)
 #define ACTOR_MVP_CHILD_HEAP_WORDS ((mlsize_t)1 << 16)
+#define ACTOR_MVP_MESSAGE_WORDS ((mlsize_t)1 << 16)
 
 enum actor_run_outcome {
   ACTOR_RUN_OK = 0,
@@ -102,6 +104,24 @@ static value actor_spawn_error(enum caml_actor_spawn_status status)
   }
   error = actor_alloc_one(1, detail); /* Error */
   return error;
+}
+
+static value actor_send_error(int kind, const char *text)
+{
+  value detail;
+
+  if (kind == 0) {
+    detail = Val_int(0); /* No_such_actor */
+  } else if (kind == 1) {
+    detail = Val_int(1); /* Message_too_large */
+  } else {
+    value message = actor_copy_string(text);
+
+    if (message == 0) return 0;
+    detail = actor_alloc_one(0, message); /* Unsupported_message */
+    if (detail == 0) return 0;
+  }
+  return actor_alloc_one(1, detail); /* Error */
 }
 
 static enum actor_run_outcome root_failure_outcome(
@@ -180,7 +200,8 @@ CAMLprim value caml_actor_run(value root)
     struct caml_actor_step step = caml_actor_scheduler_step(scheduler);
 
     if (step.reason == CAML_ACTOR_STEP_REDUCTIONS
-        || step.reason == CAML_ACTOR_STEP_YIELD) {
+        || step.reason == CAML_ACTOR_STEP_YIELD
+        || step.reason == CAML_ACTOR_STEP_BLOCKED) {
       continue;
     }
     if (step.reason == CAML_ACTOR_STEP_IDLE) {
@@ -321,4 +342,118 @@ CAMLprim value caml_actor_yield(value unit)
   }
 #endif
   caml_invalid_argument("Actor.yield outside an actor world");
+}
+
+CAMLprim value caml_actor_send(value pid_value, value message)
+{
+#if defined(NATIVE_CODE)
+  (void)pid_value;
+  (void)message;
+  caml_invalid_argument("Actor.send outside an actor world");
+#else
+  struct caml_actor_scheduler *scheduler;
+  struct caml_actor_prepared_send *prepared = NULL;
+  struct caml_actor_wire_encode_result encoded;
+  enum caml_actor_send_status send_status;
+  uintnat pid;
+  value result;
+
+  if (!caml_actor_scheduler_is_running()) {
+    caml_invalid_argument("Actor.send outside an actor world");
+  }
+  if (!Is_long(pid_value)) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  scheduler = Caml_state->actor_scheduler;
+  pid = (uintnat)Long_val(pid_value);
+  send_status = caml_actor_scheduler_can_send(scheduler, pid);
+  if (send_status == CAML_ACTOR_SEND_NO_SUCH_ACTOR) {
+    return actor_send_error(0, NULL);
+  }
+  if (send_status != CAML_ACTOR_SEND_OK) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+
+  encoded = caml_actor_wire_encode(message, ACTOR_MVP_MESSAGE_WORDS);
+  if (encoded.status != CAML_ACTOR_WIRE_ENCODE_OK) {
+    if (encoded.status == CAML_ACTOR_WIRE_ENCODE_TOO_LARGE) {
+      return actor_send_error(1, NULL);
+    }
+    if (encoded.status == CAML_ACTOR_WIRE_ENCODE_INVALID_SOURCE
+        || encoded.status == CAML_ACTOR_WIRE_ENCODE_UNSUPPORTED_VALUE) {
+      return actor_send_error(2, "unsupported message value");
+    }
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+
+  send_status = caml_actor_scheduler_prepare_send(
+    scheduler, pid, encoded.envelope, &prepared);
+  if (send_status != CAML_ACTOR_SEND_OK) {
+    caml_actor_wire_destroy(encoded.envelope);
+    if (send_status == CAML_ACTOR_SEND_NO_SUCH_ACTOR) {
+      return actor_send_error(0, NULL);
+    }
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  result = actor_alloc_one(0, Val_unit); /* Ok */
+  if (result == 0) {
+    caml_actor_scheduler_abort_send(prepared);
+    return Val_unit;
+  }
+  if (!caml_actor_scheduler_commit_send(prepared)) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  return result;
+#endif
+}
+
+CAMLprim value caml_actor_receive(value inbox)
+{
+#if defined(NATIVE_CODE)
+  (void)inbox;
+  caml_invalid_argument("Actor.receive outside an actor world");
+#else
+  struct caml_actor_scheduler *scheduler;
+  const struct caml_actor_envelope *envelope;
+  enum caml_actor_wire_decode_status status;
+  struct caml_actor_heap *heap;
+  uintnat pid;
+  value message = Val_unit;
+
+  if (!caml_actor_scheduler_is_running()) {
+    caml_invalid_argument("Actor.receive outside an actor world");
+  }
+  scheduler = Caml_state->actor_scheduler;
+  pid = caml_actor_scheduler_current_pid();
+  if (!Is_long(inbox) || (uintnat)Long_val(inbox) != pid) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  envelope = caml_actor_scheduler_peek_current_message(scheduler);
+  if (envelope == NULL) {
+    if (!caml_actor_scheduler_request_blocked()) {
+      caml_actor_scheduler_request_unsupported();
+      return Val_unit;
+    }
+    return inbox;
+  }
+
+  heap = caml_actor_heap_current();
+  status = caml_actor_wire_decode(envelope, heap, &message);
+  if (status == CAML_ACTOR_WIRE_DECODE_HEAP_EXHAUSTED) {
+    caml_actor_scheduler_request_heap_exhausted();
+    return Val_unit;
+  }
+  if (status != CAML_ACTOR_WIRE_DECODE_OK
+      || !caml_actor_scheduler_consume_current_message(scheduler)) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  return message;
+#endif
 }
