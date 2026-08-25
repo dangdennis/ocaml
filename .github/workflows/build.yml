@@ -5,6 +5,7 @@ on:
     branches:
       - '4.**'
       - '5.**'
+      - 'actor-mvp/**'
       - 'trunk'
   pull_request:
 
@@ -15,7 +16,8 @@ env:
   # List of test directories for the debug-s4096 and linux-O0 jobs. These
   # directories are selected because of their tendencies to reach corner cases
   # in the runtime system.
-  PARALLEL_TESTS: parallel callback gc-roots weak-ephe-final
+  PARALLEL_TESTS: >-
+    parallel callback gc-roots runtime-actors weak-ephe-final
   # Fully print commands executed by Make
   # MAKEFLAGS: V=1
 
