@@ -47,6 +47,7 @@ STDLIB_MODULE_BASENAMES = \
   option \
   pair \
   result \
+  actor \
   bool \
   char \
   uchar \

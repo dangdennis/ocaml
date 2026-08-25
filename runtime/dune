@@ -21,7 +21,8 @@
      interp.c ints.c io.c
    lexing.c md5.c meta.c memprof.c obj.c parsing.c signals.c str.c sys.c
      callback.c weak.c
-   finalise.c domain.c platform.c fiber.c memory.c actor_heap.c
+   finalise.c domain.c platform.c fiber.c memory.c actor.c actor_copy.c
+     actor_heap.c
      actor_scheduler.c actor_world.c startup_aux.c
      runtime_events.c sync.c
    dynlink.c backtrace_byt.c backtrace.c afl.c bigarray.c prng.c)
@@ -42,7 +43,8 @@
    ; matches the line structure of files in Makefile/BYTECODE_C_SOURCES
    interp.c misc.c fix_code.c startup_aux.c startup_byt.c freelist.c
      major_gc.c
-   minor_gc.c memory.c actor_heap.c actor_scheduler.c actor_world.c alloc.c
+   minor_gc.c memory.c actor.c actor_copy.c actor_heap.c actor_scheduler.c
+     actor_world.c alloc.c
      roots_byt.c
      globroots.c fail_byt.c
    signals_byt.c printexc.c backtrace_byt.c backtrace.c compare.c ints.c
