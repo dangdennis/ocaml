@@ -57,6 +57,13 @@ CAMLextern value caml_callback3_exn (value closure,
                                      value arg1, value arg2, value arg3);
 CAMLextern value caml_callbackN_exn (value closure, int narg, value args[]);
 
+#if defined(CAML_INTERNALS) && !defined(NATIVE_CODE)
+/* Return address used by bytecode callback frames.  Internal users that drive
+   a resumable interpreter must use this threaded-code-aware address rather
+   than manufacture a STOP instruction. */
+CAMLextern code_t caml_bytecode_callback_code(void);
+#endif
+
 CAMLextern const value * caml_named_value (char const * name);
 typedef void (*caml_named_action) (const value*, char *);
 CAMLextern void caml_iterate_named_values(caml_named_action f);

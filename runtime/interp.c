@@ -62,7 +62,10 @@ sp is a local copy of the global variable Caml_state->current_stack->sp. */
 #  ifdef DEBUG
 #    define Next goto next_instr
 #  else
-#    define Next goto *(void *)(jumptbl_base + *pc++)
+#    define Next do { \
+       if (limit_reductions) goto next_instr; \
+       goto *(void *)(jumptbl_base + *pc++); \
+     } while (0)
 #  endif
 #  define Fallthrough ((void) 0)
 #else
@@ -249,10 +252,47 @@ static value raise_unhandled_effect;
 
 /* The interpreter itself */
 
+void caml_bytecode_state_init(struct caml_bytecode_state *state,
+                              code_t prog, asize_t prog_size,
+                              value initial_env,
+                              intnat initial_extra_args)
+{
+  caml_domain_state *domain_state = Caml_state;
+  value *sp = domain_state->current_stack->sp;
+
+  if (state == NULL || prog == NULL) {
+    caml_fatal_error("invalid resumable bytecode initialization");
+  }
+  if (sp - 4 < Stack_base(domain_state->current_stack)) {
+    if (!caml_try_realloc_stack(4)) caml_raise_stack_overflow();
+    sp = domain_state->current_stack->sp;
+  }
+
+  state->prog = prog;
+  state->prog_size = prog_size;
+  state->stack_id = domain_state->current_stack->id;
+  state->entry_stack_id = domain_state->current_stack->id;
+  state->trap_sp_off = 1;
+  state->return_trap_sp_off = domain_state->trap_sp_off;
+  state->entry_stack_words =
+    Stack_high(domain_state->current_stack) - sp;
+  state->domain_unique_id = domain_state->unique_id;
+  state->phase = CAML_BYTECODE_STATE_SUSPENDED;
+
+  sp -= 4;
+  sp[0] = Val_int(0);
+  sp[1] = (value)prog;
+  sp[2] = initial_env;
+  sp[3] = Val_long(initial_extra_args);
+  domain_state->current_stack->sp = sp;
+}
+
 CAMLno_tsan /* No need to TSan-instrument this (and pay a slowdown) function as
                TSan is not supported for bytecode. */
-value caml_bytecode_interpreter(code_t prog, asize_t prog_size,
-                                value initial_env, intnat initial_extra_args)
+enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
+  struct caml_bytecode_state *state,
+  uintnat max_reductions,
+  value *result)
 {
 #ifdef PC_REG
   register code_t pc PC_REG;
@@ -273,12 +313,16 @@ value caml_bytecode_interpreter(code_t prog, asize_t prog_size,
   value env;
   intnat extra_args;
   struct caml_exception_context * initial_external_raise;
-  int initial_stack_words;
-  intnat initial_trap_sp_off;
+  struct caml__roots_block * initial_local_roots;
+  int limit_reductions =
+    max_reductions != CAML_BYTECODE_REDUCTIONS_UNLIMITED;
+  uintnat reductions_left = max_reductions;
   volatile value raise_exn_bucket = Val_unit;
   struct longjmp_buffer raise_buf;
   value resume_fn, resume_arg;
   struct stack_info* resume_tail;
+  code_t prog;
+  asize_t prog_size;
   caml_domain_state* domain_state = Caml_state;
   struct caml_exception_context exception_ctx =
     { &raise_buf, domain_state->local_roots, &raise_exn_bucket};
@@ -292,7 +336,7 @@ value caml_bytecode_interpreter(code_t prog, asize_t prog_size,
   };
 #endif
 
-  if (prog == NULL) {           /* Interpreter is initializing */
+  if (state == NULL) {          /* Interpreter is initializing */
     static opcode_t raise_unhandled_effect_code[] = { ACC, 0, RAISE };
     value raise_unhandled_effect_closure;
 
@@ -314,21 +358,44 @@ value caml_bytecode_interpreter(code_t prog, asize_t prog_size,
     caml_register_generational_global_root(&raise_unhandled_effect);
     caml_register_generational_global_root(&caml_global_data);
     caml_init_callbacks();
-    return Val_unit;
+    if (result != NULL) *result = Val_unit;
+    return CAML_BYTECODE_STOP_VALUE;
   }
+
+  if (result == NULL
+      || state->phase != CAML_BYTECODE_STATE_SUSPENDED
+      || state->domain_unique_id != domain_state->unique_id
+      || state->stack_id != domain_state->current_stack->id
+      || domain_state->gc_regs != NULL) {
+    caml_fatal_error("invalid resumable bytecode state");
+  }
+
+  prog = state->prog;
+  prog_size = state->prog_size;
+  (void)prog;
+  (void)prog_size;
 
 #if defined(THREADED_CODE) && defined(ARCH_SIXTYFOUR) && !defined(ARCH_CODE32)
   jumptbl_base = Jumptbl_base;
 #endif
-  initial_trap_sp_off = domain_state->trap_sp_off;
-  initial_stack_words =
-    Stack_high(domain_state->current_stack) - domain_state->current_stack->sp;
   initial_external_raise = domain_state->external_raise;
+  initial_local_roots = domain_state->local_roots;
+  (void)initial_local_roots;
+  sp = domain_state->current_stack->sp;
+  accu = sp[0];
+  pc = (code_t)sp[1];
+  env = sp[2];
+  extra_args = Long_val(sp[3]);
+  sp += 4;
+  domain_state->current_stack->sp = sp;
+  state->phase = CAML_BYTECODE_STATE_RUNNING;
 
   if (sigsetjmp(raise_buf.buf, 0)) {
-    /* no non-volatile local variables read here */
+    /* [limit_reductions] and the state pointers are unchanged since setjmp. */
     sp = domain_state->current_stack->sp;
     accu = raise_exn_bucket;
+    reductions_left = limit_reductions
+      ? 0 : CAML_BYTECODE_REDUCTIONS_UNLIMITED;
 
     check_trap_barrier_for_exception (domain_state);
     if (domain_state->backtrace_active) {
@@ -341,17 +408,18 @@ value caml_bytecode_interpreter(code_t prog, asize_t prog_size,
   }
   domain_state->external_raise = &exception_ctx;
 
-  domain_state->trap_sp_off = 1;
-
-  sp = domain_state->current_stack->sp;
-  pc = prog;
-  extra_args = initial_extra_args;
-  env = initial_env;
-  accu = Val_int(0);
+  domain_state->trap_sp_off = state->trap_sp_off;
 
 #ifdef THREADED_CODE
-#ifdef DEBUG
  next_instr:
+  if (limit_reductions) {
+    if (reductions_left == 0) {
+      if (caml_check_pending_actions()) goto process_signal;
+      goto reduction_limit;
+    }
+    reductions_left--;
+  }
+#ifdef DEBUG
   if (caml_icount-- == 0) caml_stop_here ();
   CAMLassert(Stack_base(domain_state->current_stack) <= sp);
   CAMLassert(sp <= Stack_high(domain_state->current_stack));
@@ -359,6 +427,13 @@ value caml_bytecode_interpreter(code_t prog, asize_t prog_size,
   goto *(void *)(jumptbl_base + *pc++); /* Jump to the first instruction */
 #else
   while(1) {
+    if (limit_reductions) {
+      if (reductions_left == 0) {
+        if (caml_check_pending_actions()) goto process_signal;
+        goto reduction_limit;
+      }
+      reductions_left--;
+    }
 #ifdef DEBUG
     caml_bcodcount++;
     if (caml_icount-- == 0) caml_stop_here ();
@@ -975,11 +1050,18 @@ value caml_bytecode_interpreter(code_t prog, asize_t prog_size,
     raise_notrace:
       if (domain_state->trap_sp_off > 0) {
         if (Stack_parent(domain_state->current_stack) == NULL) {
+          CAMLassert(
+            domain_state->current_stack->id == state->entry_stack_id);
           domain_state->external_raise = initial_external_raise;
-          domain_state->trap_sp_off = initial_trap_sp_off;
+          domain_state->trap_sp_off = state->return_trap_sp_off;
           domain_state->current_stack->sp =
-            Stack_high(domain_state->current_stack) - initial_stack_words ;
-          return Make_exception_result(accu);
+            Stack_high(domain_state->current_stack) - state->entry_stack_words;
+          state->stack_id = domain_state->current_stack->id;
+          state->phase = CAML_BYTECODE_STATE_FINISHED;
+          CAMLassert(domain_state->local_roots == initial_local_roots);
+          CAMLassert(domain_state->gc_regs == NULL);
+          *result = accu;
+          return CAML_BYTECODE_STOP_EXCEPTION;
         } else {
           struct stack_info* old_stack = domain_state->current_stack;
           struct stack_info* parent_stack = Stack_parent(old_stack);
@@ -1258,11 +1340,39 @@ value caml_bytecode_interpreter(code_t prog, asize_t prog_size,
 
 /* Debugging and machine control */
 
+    reduction_limit:
+      CAMLassert(state->phase == CAML_BYTECODE_STATE_RUNNING);
+      CAMLassert(domain_state->local_roots == initial_local_roots);
+      CAMLassert(domain_state->gc_regs == NULL);
+      CAMLassert(sp - 4 >= Stack_base(domain_state->current_stack));
+      if (domain_state->current_stack->id != state->entry_stack_id) {
+        caml_fatal_error(
+          "resumable bytecode stopped on a non-entry effect stack");
+      }
+      state->stack_id = domain_state->current_stack->id;
+      state->trap_sp_off = domain_state->trap_sp_off;
+      sp -= 4;
+      sp[0] = accu;
+      sp[1] = (value)pc;
+      sp[2] = env;
+      sp[3] = Val_long(extra_args);
+      domain_state->current_stack->sp = sp;
+      state->phase = CAML_BYTECODE_STATE_SUSPENDED;
+      domain_state->external_raise = initial_external_raise;
+      domain_state->trap_sp_off = state->return_trap_sp_off;
+      *result = Val_unit;
+      return CAML_BYTECODE_STOP_REDUCTIONS;
+
     Instruct(STOP):
       domain_state->external_raise = initial_external_raise;
-      domain_state->trap_sp_off = initial_trap_sp_off;
+      domain_state->trap_sp_off = state->return_trap_sp_off;
       domain_state->current_stack->sp = sp;
-      return accu;
+      state->stack_id = domain_state->current_stack->id;
+      state->phase = CAML_BYTECODE_STATE_FINISHED;
+      CAMLassert(domain_state->local_roots == initial_local_roots);
+      CAMLassert(domain_state->gc_regs == NULL);
+      *result = accu;
+      return CAML_BYTECODE_STOP_VALUE;
 
     Instruct(EVENT):
       if (--caml_event_count == 0) {
@@ -1429,4 +1539,28 @@ do_resume: {
     }
   }
 #endif
+}
+
+value caml_bytecode_interpreter(code_t prog, asize_t prog_size,
+                                value initial_env, intnat initial_extra_args)
+{
+  struct caml_bytecode_state state;
+  enum caml_bytecode_stop_reason reason;
+  value result;
+
+  if (prog == NULL) {
+    reason = caml_bytecode_interpreter_slice(
+      NULL, CAML_BYTECODE_REDUCTIONS_UNLIMITED, &result);
+    CAMLassert(reason == CAML_BYTECODE_STOP_VALUE);
+    return result;
+  }
+
+  caml_bytecode_state_init(
+    &state, prog, prog_size, initial_env, initial_extra_args);
+  reason = caml_bytecode_interpreter_slice(
+    &state, CAML_BYTECODE_REDUCTIONS_UNLIMITED, &result);
+  CAMLassert(reason != CAML_BYTECODE_STOP_REDUCTIONS);
+  if (reason == CAML_BYTECODE_STOP_EXCEPTION)
+    return Make_exception_result(result);
+  return result;
 }

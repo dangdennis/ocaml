@@ -23,6 +23,49 @@
 #include "misc.h"
 #include "mlvalues.h"
 
+/* A suspended bytecode interpreter stores its GC-visible registers in the
+   first four words of the current stack: accumulator, next program counter,
+   environment, and extra arguments.  This is also the frame shape expected
+   by the bytecode debugger. */
+enum caml_bytecode_stop_reason {
+  CAML_BYTECODE_STOP_REDUCTIONS,
+  CAML_BYTECODE_STOP_VALUE,
+  CAML_BYTECODE_STOP_EXCEPTION
+};
+
+enum caml_bytecode_state_phase {
+  CAML_BYTECODE_STATE_SUSPENDED,
+  CAML_BYTECODE_STATE_RUNNING,
+  CAML_BYTECODE_STATE_FINISHED
+};
+
+struct caml_bytecode_state {
+  code_t prog;
+  asize_t prog_size;
+  int64_t stack_id;
+  int64_t entry_stack_id;
+  intnat trap_sp_off;
+  intnat return_trap_sp_off;
+  int entry_stack_words;
+  int domain_unique_id;
+  enum caml_bytecode_state_phase phase;
+};
+
+#define CAML_BYTECODE_REDUCTIONS_UNLIMITED CAML_UINTNAT_MAX
+
+/* These entry points are synchronous and Domain-local.  A suspended state
+   must remain on the Domain's current stack until the next resume. */
+CAMLextern void caml_bytecode_state_init(
+  struct caml_bytecode_state *state,
+  code_t prog, asize_t prog_size,
+  value initial_env, intnat initial_extra_args);
+
+CAMLextern enum caml_bytecode_stop_reason
+caml_bytecode_interpreter_slice(
+  struct caml_bytecode_state *state,
+  uintnat max_reductions,
+  value *result);
+
 CAMLextern
 value caml_bytecode_interpreter (code_t prog, asize_t prog_size,
                                  value initial_env, intnat initial_extra_args);
