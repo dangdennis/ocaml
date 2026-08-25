@@ -18,7 +18,9 @@
 /* The bytecode interpreter */
 #include <stdio.h>
 #include "caml/alloc.h"
+#include "caml/actor_heap.h"
 #include "caml/actor_scheduler.h"
+#include "caml/actor_world.h"
 #include "caml/backtrace.h"
 #include "caml/callback.h"
 #include "caml/codefrag.h"
@@ -135,6 +137,17 @@ sp is a local copy of the global variable Caml_state->current_stack->sp. */
 #define Actor_scheduler_running() \
   (CAMLunlikely(domain_state->actor_scheduler != NULL) \
    && caml_actor_scheduler_is_running())
+
+#define Actor_try_alloc(result, wosize, tag) do { \
+  enum caml_actor_heap_alloc_error actor_alloc_error; \
+  (result) = caml_actor_heap_try_alloc( \
+    domain_state->actor_heap, (wosize), (tag), 0, &actor_alloc_error); \
+  if ((result) == 0) { \
+    if (actor_alloc_error == CAML_ACTOR_HEAP_ALLOC_QUOTA) \
+      goto actor_heap_exhausted; \
+    goto unsupported_operation; \
+  } \
+} while (0)
 
 #ifdef THREADED_CODE
 #define Restart_curr_instr \
@@ -420,7 +433,8 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
  next_instr:
   if (limit_reductions) {
     if (reductions_left == 0) {
-      if (caml_check_pending_actions()) {
+      if (caml_check_pending_actions()
+          && !caml_actor_world_is_frozen()) {
         if (Actor_scheduler_running()) goto host_action;
         goto process_signal;
       }
@@ -438,7 +452,8 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
   while(1) {
     if (limit_reductions) {
       if (reductions_left == 0) {
-        if (caml_check_pending_actions()) {
+        if (caml_check_pending_actions()
+            && !caml_actor_world_is_frozen()) {
           if (Actor_scheduler_running()) goto host_action;
           goto process_signal;
         }
@@ -713,7 +728,11 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       } else {
         mlsize_t num_args;
         num_args = 1 + extra_args; /* arg1 + extra args */
-        Alloc_small(accu, num_args + 3, Closure_tag, Enter_gc);
+        if (Actor_scheduler_running()) {
+          Actor_try_alloc(accu, num_args + 3, Closure_tag);
+        } else {
+          Alloc_small(accu, num_args + 3, Closure_tag, Enter_gc);
+        }
         Field(accu, 2) = env;
         for (mlsize_t i = 0; i < num_args; i++) Field(accu, i + 3) = sp[i];
         Code_val(accu) = pc - 3; /* Point to the preceding RESTART instr. */
@@ -726,7 +745,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
     Instruct(CLOSURE): {
       int nvars = *pc++;
       if (nvars > 0) *--sp = accu;
-      if (nvars <= Max_young_wosize - 2) {
+      if (Actor_scheduler_running()) {
+        Actor_try_alloc(accu, 2 + nvars, Closure_tag);
+        for (int i = 0; i < nvars; i++) Field(accu, i + 2) = sp[i];
+      } else if (nvars <= Max_young_wosize - 2) {
         /* nvars + 2 <= Max_young_wosize, can allocate in minor heap */
         Alloc_small(accu, 2 + nvars, Closure_tag, Enter_gc);
         for (int i = 0; i < nvars; i++) Field(accu, i + 2) = sp[i];
@@ -754,7 +776,11 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       mlsize_t blksize = envofs + nvars;
       volatile value * p;
       if (nvars > 0) *--sp = accu;
-      if (blksize <= Max_young_wosize) {
+      if (Actor_scheduler_running()) {
+        Actor_try_alloc(accu, blksize, Closure_tag);
+        p = &Field(accu, envofs);
+        for (int i = 0; i < nvars; i++, p++) *p = sp[i];
+      } else if (blksize <= Max_young_wosize) {
         Alloc_small(accu, blksize, Closure_tag, Enter_gc);
         p = &Field(accu, envofs);
         for (int i = 0; i < nvars; i++, p++) *p = sp[i];
@@ -809,6 +835,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       *--sp = accu;
       Fallthrough;
     Instruct(GETGLOBAL):
+      if (Actor_scheduler_running()) goto unsupported_operation;
       accu = Field(caml_global_data, *pc);
       pc++;
       Next;
@@ -817,6 +844,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       *--sp = accu;
       Fallthrough;
     Instruct(GETGLOBALFIELD): {
+      if (Actor_scheduler_running()) goto unsupported_operation;
       accu = Field(caml_global_data, *pc);
       pc++;
       accu = Field(accu, *pc);
@@ -825,6 +853,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
     }
 
     Instruct(SETGLOBAL):  {
+      if (Actor_scheduler_running()) goto unsupported_operation;
       caml_modify(&Field(caml_global_data, *pc), accu);
       accu = Val_unit;
       pc++;
@@ -849,7 +878,11 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       mlsize_t wosize = *pc++;
       tag_t tag = *pc++;
       value block;
-      if (wosize <= Max_young_wosize) {
+      if (Actor_scheduler_running()) {
+        Actor_try_alloc(block, wosize, tag);
+        Field(block, 0) = accu;
+        for (mlsize_t i = 1; i < wosize; i++) Field(block, i) = *sp++;
+      } else if (wosize <= Max_young_wosize) {
         Alloc_small(block, wosize, tag, Enter_gc);
         Field(block, 0) = accu;
         for (mlsize_t i = 1; i < wosize; i++) Field(block, i) = *sp++;
@@ -865,7 +898,11 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
     Instruct(MAKEBLOCK1): {
       tag_t tag = *pc++;
       value block;
-      Alloc_small(block, 1, tag, Enter_gc);
+      if (Actor_scheduler_running()) {
+        Actor_try_alloc(block, 1, tag);
+      } else {
+        Alloc_small(block, 1, tag, Enter_gc);
+      }
       Field(block, 0) = accu;
       accu = block;
       Next;
@@ -873,7 +910,11 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
     Instruct(MAKEBLOCK2): {
       tag_t tag = *pc++;
       value block;
-      Alloc_small(block, 2, tag, Enter_gc);
+      if (Actor_scheduler_running()) {
+        Actor_try_alloc(block, 2, tag);
+      } else {
+        Alloc_small(block, 2, tag, Enter_gc);
+      }
       Field(block, 0) = accu;
       Field(block, 1) = sp[0];
       sp += 1;
@@ -883,7 +924,11 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
     Instruct(MAKEBLOCK3): {
       tag_t tag = *pc++;
       value block;
-      Alloc_small(block, 3, tag, Enter_gc);
+      if (Actor_scheduler_running()) {
+        Actor_try_alloc(block, 3, tag);
+      } else {
+        Alloc_small(block, 3, tag, Enter_gc);
+      }
       Field(block, 0) = accu;
       Field(block, 1) = sp[0];
       Field(block, 2) = sp[1];
@@ -894,7 +939,9 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
     Instruct(MAKEFLOATBLOCK): {
       mlsize_t size = *pc++;
       value block;
-      if (size <= Max_young_wosize / Double_wosize) {
+      if (Actor_scheduler_running()) {
+        Actor_try_alloc(block, size * Double_wosize, Double_array_tag);
+      } else if (size <= Max_young_wosize / Double_wosize) {
         Alloc_small(block, size * Double_wosize, Double_array_tag, Enter_gc);
       } else {
         block = caml_alloc_shr(size * Double_wosize, Double_array_tag);
@@ -922,38 +969,81 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       accu = Field(accu, *pc); pc++; Next;
     Instruct(GETFLOATFIELD): {
       double d = Double_flat_field(accu, *pc++);
-      Alloc_small(accu, Double_wosize, Double_tag, Enter_gc);
+      if (Actor_scheduler_running()) {
+        Actor_try_alloc(accu, Double_wosize, Double_tag);
+      } else {
+        Alloc_small(accu, Double_wosize, Double_tag, Enter_gc);
+      }
       Store_double_val(accu, d);
       Next;
     }
 
     Instruct(SETFIELD0):
-      caml_modify(&Field(accu, 0), *sp++);
+      if (Actor_scheduler_running()
+          && caml_actor_heap_check_field_store(accu, 0, sp[0])
+               != CAML_ACTOR_HEAP_STORE_OK) {
+        goto unsupported_operation;
+      }
+      caml_modify(&Field(accu, 0), sp[0]);
+      sp++;
       accu = Val_unit;
       Next;
     Instruct(SETFIELD1):
-      caml_modify(&Field(accu, 1), *sp++);
+      if (Actor_scheduler_running()
+          && caml_actor_heap_check_field_store(accu, 1, sp[0])
+               != CAML_ACTOR_HEAP_STORE_OK) {
+        goto unsupported_operation;
+      }
+      caml_modify(&Field(accu, 1), sp[0]);
+      sp++;
       accu = Val_unit;
       Next;
     Instruct(SETFIELD2):
-      caml_modify(&Field(accu, 2), *sp++);
+      if (Actor_scheduler_running()
+          && caml_actor_heap_check_field_store(accu, 2, sp[0])
+               != CAML_ACTOR_HEAP_STORE_OK) {
+        goto unsupported_operation;
+      }
+      caml_modify(&Field(accu, 2), sp[0]);
+      sp++;
       accu = Val_unit;
       Next;
     Instruct(SETFIELD3):
-      caml_modify(&Field(accu, 3), *sp++);
+      if (Actor_scheduler_running()
+          && caml_actor_heap_check_field_store(accu, 3, sp[0])
+               != CAML_ACTOR_HEAP_STORE_OK) {
+        goto unsupported_operation;
+      }
+      caml_modify(&Field(accu, 3), sp[0]);
+      sp++;
       accu = Val_unit;
       Next;
-    Instruct(SETFIELD):
-      caml_modify(&Field(accu, *pc), *sp++);
+    Instruct(SETFIELD): {
+      mlsize_t field = *pc;
+      if (Actor_scheduler_running()
+          && caml_actor_heap_check_field_store(accu, field, sp[0])
+               != CAML_ACTOR_HEAP_STORE_OK) {
+        goto unsupported_operation;
+      }
+      caml_modify(&Field(accu, field), sp[0]);
+      sp++;
       accu = Val_unit;
       pc++;
       Next;
-    Instruct(SETFLOATFIELD):
-      Store_double_flat_field(accu, *pc, Double_val(*sp));
+    }
+    Instruct(SETFLOATFIELD): {
+      mlsize_t field = *pc;
+      if (Actor_scheduler_running()
+          && caml_actor_heap_check_double_store(accu, field)
+               != CAML_ACTOR_HEAP_STORE_OK) {
+        goto unsupported_operation;
+      }
+      Store_double_flat_field(accu, field, Double_val(*sp));
       accu = Val_unit;
       sp++;
       pc++;
       Next;
+    }
 
 /* Array operations */
 
@@ -970,11 +1060,18 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       accu = Field(accu, Long_val(sp[0]));
       sp += 1;
       Next;
-    Instruct(SETVECTITEM):
-      caml_modify(&Field(accu, Long_val(sp[0])), sp[1]);
+    Instruct(SETVECTITEM): {
+      mlsize_t field = Long_val(sp[0]);
+      if (Actor_scheduler_running()
+          && caml_actor_heap_check_vector_store(accu, field, sp[1])
+               != CAML_ACTOR_HEAP_STORE_OK) {
+        goto unsupported_operation;
+      }
+      caml_modify(&Field(accu, field), sp[1]);
       accu = Val_unit;
       sp += 2;
       Next;
+    }
 
 /* Bytes/String operations */
     Instruct(GETSTRINGCHAR):
@@ -982,11 +1079,18 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       accu = Val_int(Byte_u(accu, Long_val(sp[0])));
       sp += 1;
       Next;
-    Instruct(SETBYTESCHAR):
-      Byte_u(accu, Long_val(sp[0])) = Int_val(sp[1]);
+    Instruct(SETBYTESCHAR): {
+      mlsize_t byte = Long_val(sp[0]);
+      if (Actor_scheduler_running()
+          && caml_actor_heap_check_bytes_store(accu, byte)
+               != CAML_ACTOR_HEAP_STORE_OK) {
+        goto unsupported_operation;
+      }
+      Byte_u(accu, byte) = Int_val(sp[1]);
       sp += 2;
       accu = Val_unit;
       Next;
+    }
 
 /* Branches and conditional branches */
 
@@ -1033,9 +1137,11 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
         /* We must check here so that if a signal is pending and its
            handler triggers an exception, the exception is trapped
            by the current try...with, not the enclosing one. */
-        pc--; /* restart the POPTRAP after processing the signal */
-        if (Actor_scheduler_running()) goto host_action;
-        goto process_signal;
+        if (!caml_actor_world_is_frozen()) {
+          pc--; /* restart the POPTRAP after processing the signal */
+          if (Actor_scheduler_running()) goto host_action;
+          goto process_signal;
+        }
       }
       domain_state->trap_sp_off = Long_val(Trap_link(sp));
       sp += 4;
@@ -1111,7 +1217,9 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       if (sp < Stack_threshold_ptr(domain_state->current_stack)) {
         domain_state->current_stack->sp = sp;
         if (!caml_try_realloc_stack(Stack_threshold_words)) {
-          Setup_for_c_call; caml_raise_stack_overflow();
+          if (Actor_scheduler_running()) goto unsupported_operation;
+          Setup_for_c_call;
+          caml_raise_stack_overflow();
         }
         sp = domain_state->current_stack->sp;
       }
@@ -1121,8 +1229,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 
     Instruct(CHECK_SIGNALS):    /* accu not preserved */
       if (Caml_check_gc_interrupt(domain_state)) {
-        if (Actor_scheduler_running()) goto host_action;
-        goto process_signal;
+        if (!caml_actor_world_is_frozen()) {
+          if (Actor_scheduler_running()) goto host_action;
+          goto process_signal;
+        }
       }
       Next;
 
@@ -1135,9 +1245,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 /* Calling C functions */
 
     Instruct(C_CALL1):
-      if (Actor_scheduler_running()
-          && !caml_actor_scheduler_primitive_allowed(*pc))
-        goto unsupported_operation;
+      if (Actor_scheduler_running()) goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive1(*pc)(accu);
       Restore_after_c_call;
@@ -1154,9 +1262,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       pc++;
       Next;
     Instruct(C_CALL3):
-      if (Actor_scheduler_running()
-          && !caml_actor_scheduler_primitive_allowed(*pc))
-        goto unsupported_operation;
+      if (Actor_scheduler_running()) goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive3(*pc)(accu, sp[2], sp[3]);
       Restore_after_c_call;
@@ -1164,9 +1270,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       pc++;
       Next;
     Instruct(C_CALL4):
-      if (Actor_scheduler_running()
-          && !caml_actor_scheduler_primitive_allowed(*pc))
-        goto unsupported_operation;
+      if (Actor_scheduler_running()) goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive4(*pc)(accu, sp[2], sp[3], sp[4]);
       Restore_after_c_call;
@@ -1174,9 +1278,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       pc++;
       Next;
     Instruct(C_CALL5):
-      if (Actor_scheduler_running()
-          && !caml_actor_scheduler_primitive_allowed(*pc))
-        goto unsupported_operation;
+      if (Actor_scheduler_running()) goto unsupported_operation;
       Setup_for_c_call;
       accu = Primitive5(*pc)(accu, sp[2], sp[3], sp[4], sp[5]);
       Restore_after_c_call;
@@ -1184,10 +1286,9 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       pc++;
       Next;
     Instruct(C_CALLN): {
-      int nargs = *pc++;
-      if (Actor_scheduler_running()
-          && !caml_actor_scheduler_primitive_allowed(*pc))
-        goto unsupported_operation;
+      int nargs;
+      if (Actor_scheduler_running()) goto unsupported_operation;
+      nargs = *pc++;
       *--sp = accu;
       Setup_for_c_call;
       accu = PrimitiveN(*pc)(sp + 2, nargs);
@@ -1237,14 +1338,26 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       accu = Val_long(Long_val(accu) * Long_val(*sp++)); Next;
 
     Instruct(DIVINT): {
-      intnat divisor = Long_val(*sp++);
-      if (divisor == 0) { Setup_for_c_call; caml_raise_zero_divide(); }
+      intnat divisor = Long_val(*sp);
+      if (divisor == 0) {
+        if (Actor_scheduler_running()) goto unsupported_operation;
+        sp++;
+        Setup_for_c_call;
+        caml_raise_zero_divide();
+      }
+      sp++;
       accu = Val_long(Long_val(accu) / divisor);
       Next;
     }
     Instruct(MODINT): {
-      intnat divisor = Long_val(*sp++);
-      if (divisor == 0) { Setup_for_c_call; caml_raise_zero_divide(); }
+      intnat divisor = Long_val(*sp);
+      if (divisor == 0) {
+        if (Actor_scheduler_running()) goto unsupported_operation;
+        sp++;
+        Setup_for_c_call;
+        caml_raise_zero_divide();
+      }
+      sp++;
       accu = Val_long(Long_val(accu) % divisor);
       Next;
     }
@@ -1296,6 +1409,11 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       pc++;
       Next;
     Instruct(OFFSETREF):
+      if (Actor_scheduler_running()
+          && caml_actor_heap_check_offsetref(accu)
+               != CAML_ACTOR_HEAP_STORE_OK) {
+        goto unsupported_operation;
+      }
       Field(accu, 0) += *pc << 1;
       accu = Val_unit;
       pc++;
@@ -1309,12 +1427,14 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 #define Lookup(obj, lab) Field (Field (obj, 0), Int_val(lab))
 
     Instruct(GETMETHOD):
+      if (Actor_scheduler_running()) goto unsupported_operation;
       accu = Lookup(sp[0], accu);
       Next;
 
 #define CAML_METHOD_CACHE
 #ifdef CAML_METHOD_CACHE
     Instruct(GETPUBMET): {
+      if (Actor_scheduler_running()) goto unsupported_operation;
       /* accu == object, pc[0] == tag, pc[1] == cache */
       value meths = Field (accu, 0);
       value ofs;
@@ -1359,6 +1479,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       Fallthrough;
 #endif
     Instruct(GETDYNMET): {
+      if (Actor_scheduler_running()) goto unsupported_operation;
       /* accu == tag, sp[0] == object, *pc == cache */
       value meths = Field (sp[0], 0);
       int li = 3, hi = Field(meths,0), mi;
@@ -1383,6 +1504,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 
     unsupported_operation:
       suspend_reason = CAML_BYTECODE_STOP_UNSUPPORTED;
+      goto suspend_interpreter;
+
+    actor_heap_exhausted:
+      suspend_reason = CAML_BYTECODE_STOP_HEAP_EXHAUSTED;
 
     suspend_interpreter:
       CAMLassert(state->phase == CAML_BYTECODE_STATE_RUNNING);
@@ -1419,6 +1544,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       return CAML_BYTECODE_STOP_VALUE;
 
     Instruct(EVENT):
+      if (Actor_scheduler_running()) goto unsupported_operation;
       if (--caml_event_count == 0) {
         Setup_for_debugger;
         caml_debugger(EVENT_COUNT, Val_unit);
@@ -1427,6 +1553,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       Restart_curr_instr;
 
     Instruct(BREAK):
+      if (Actor_scheduler_running()) goto unsupported_operation;
       Setup_for_debugger;
       caml_debugger(BREAKPOINT, Val_unit);
       Restore_after_debugger;

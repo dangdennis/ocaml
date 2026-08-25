@@ -1210,6 +1210,7 @@ runtime_COMMON_C_SOURCES = \
   alloc \
   actor_heap \
   actor_scheduler \
+  actor_world \
   array \
   backtrace \
   bigarray \

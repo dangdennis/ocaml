@@ -45,6 +45,10 @@ void caml_free_shared_heap(struct caml_heap_state* heap);
 value* caml_shared_try_alloc(struct caml_heap_state*,
                              mlsize_t, tag_t, reserved_t);
 
+/* True only for the canonical start of a live block in [heap]. */
+int caml_shared_heap_contains_block(
+  struct caml_heap_state*, value candidate);
+
 /* Copy the domain-local heap stats into a heap stats sample. */
 void caml_collect_heap_stats_sample(
   struct caml_heap_state* local,
