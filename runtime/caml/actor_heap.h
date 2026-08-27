@@ -91,6 +91,15 @@ CAMLextern uintnat caml_actor_heap_collections(
 CAMLextern void caml_actor_heap_note_shared_bypass(
   struct caml_actor_heap *heap);
 
+/* Checked actor-mode reads.  Ordinary fields exclude closure/runtime
+   metadata; closure-environment reads accept only the captured-value area. */
+CAMLextern int caml_actor_heap_read_field(
+  value block, mlsize_t field, value *result);
+CAMLextern int caml_actor_heap_read_closure_env(
+  value closure, mlsize_t field, value *result);
+CAMLextern int caml_actor_heap_closure_wosize(
+  value closure, mlsize_t *wosize);
+
 CAMLextern enum caml_actor_heap_store_status caml_actor_heap_check_store(
   const volatile value *field, value new_value);
 CAMLextern enum caml_actor_heap_store_status

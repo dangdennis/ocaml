@@ -286,6 +286,7 @@ META
 /tools/opnames.ml
 /tools/dumpobj
 /tools/dumpobj.opt
+/tools/ocamlactorcheck
 /tools/ocamlobjinfo
 /tools/ocamlobjinfo.opt
 /tools/cvt_emit

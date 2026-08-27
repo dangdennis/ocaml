@@ -49,6 +49,14 @@ jobs:
           make -C testsuite one DIR=tests/runtime-actors USE_RUNTIME=i
           OCAMLTESTDIR=/tmp/actors-instrumented
           TESTLOG=/tmp/actors-instrumented.log
+      - name: Bytecode tooling tests
+        run: |
+          make -C testsuite one DIR=tests/tool-ocamlactorcheck \
+            OCAMLTESTDIR=/tmp/tool-ocamlactorcheck \
+            TESTLOG=/tmp/tool-ocamlactorcheck.log
+          make -C testsuite one DIR=tests/tool-dumpobj \
+            OCAMLTESTDIR=/tmp/tool-dumpobj \
+            TESTLOG=/tmp/tool-dumpobj.log
       - name: Benchmark smoke test
         run: |
           bench_dir="$(mktemp -d)"
