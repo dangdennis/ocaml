@@ -345,6 +345,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
   value resume_fn, resume_arg;
   struct stack_info* resume_tail;
   code_t prog;
+  code_t actor_current_pc = NULL;
   asize_t prog_size;
   caml_domain_state* domain_state = Caml_state;
   struct caml_exception_context exception_ctx =
@@ -451,6 +452,8 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
   CAMLassert(Stack_base(domain_state->current_stack) <= sp);
   CAMLassert(sp <= Stack_high(domain_state->current_stack));
 #endif
+  if (CAMLunlikely(domain_state->actor_scheduler != NULL))
+    actor_current_pc = pc;
   goto *(void *)(jumptbl_base + *pc++); /* Jump to the first instruction */
 #else
   while(1) {
@@ -483,6 +486,8 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
     CAMLassert(sp <= Stack_high(domain_state->current_stack));
 
 #endif
+    if (CAMLunlikely(domain_state->actor_scheduler != NULL))
+      actor_current_pc = pc;
     curr_instr = *pc++;
 
   dispatch_instr:
@@ -1250,8 +1255,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 
     Instruct(C_CALL1):
       if (Actor_scheduler_running()
-          && !caml_actor_scheduler_primitive_allowed(*pc, 1))
+          && !caml_actor_scheduler_primitive_allowed(*pc, 1)) {
+        caml_actor_scheduler_record_unsupported_primitive(*pc, 1);
         goto unsupported_operation;
+      }
       Setup_for_c_call;
       accu = Primitive1(*pc)(accu);
       Restore_after_c_call;
@@ -1267,16 +1274,20 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
           pc -= 2;
           goto actor_blocked;
         }
-        if (request == CAML_ACTOR_CONTROL_UNSUPPORTED)
+        if (request == CAML_ACTOR_CONTROL_UNSUPPORTED) {
+          caml_actor_scheduler_record_unsupported_primitive(pc[-1], 1);
           goto unsupported_operation;
+        }
         if (request == CAML_ACTOR_CONTROL_HEAP_EXHAUSTED)
           goto actor_heap_exhausted;
       }
       Next;
     Instruct(C_CALL2):
       if (Actor_scheduler_running()
-          && !caml_actor_scheduler_primitive_allowed(*pc, 2))
+          && !caml_actor_scheduler_primitive_allowed(*pc, 2)) {
+        caml_actor_scheduler_record_unsupported_primitive(*pc, 2);
         goto unsupported_operation;
+      }
       Setup_for_c_call;
       accu = Primitive2(*pc)(accu, sp[2]);
       Restore_after_c_call;
@@ -1287,14 +1298,19 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
           caml_actor_scheduler_take_control_request();
 
         if (request == CAML_ACTOR_CONTROL_YIELD) goto actor_yield;
-        if (request == CAML_ACTOR_CONTROL_UNSUPPORTED)
+        if (request == CAML_ACTOR_CONTROL_UNSUPPORTED) {
+          caml_actor_scheduler_record_unsupported_primitive(pc[-1], 2);
           goto unsupported_operation;
+        }
         if (request == CAML_ACTOR_CONTROL_HEAP_EXHAUSTED)
           goto actor_heap_exhausted;
       }
       Next;
     Instruct(C_CALL3):
-      if (Actor_scheduler_running()) goto unsupported_operation;
+      if (Actor_scheduler_running()) {
+        caml_actor_scheduler_record_unsupported_primitive(*pc, 3);
+        goto unsupported_operation;
+      }
       Setup_for_c_call;
       accu = Primitive3(*pc)(accu, sp[2], sp[3]);
       Restore_after_c_call;
@@ -1302,7 +1318,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       pc++;
       Next;
     Instruct(C_CALL4):
-      if (Actor_scheduler_running()) goto unsupported_operation;
+      if (Actor_scheduler_running()) {
+        caml_actor_scheduler_record_unsupported_primitive(*pc, 4);
+        goto unsupported_operation;
+      }
       Setup_for_c_call;
       accu = Primitive4(*pc)(accu, sp[2], sp[3], sp[4]);
       Restore_after_c_call;
@@ -1310,7 +1329,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       pc++;
       Next;
     Instruct(C_CALL5):
-      if (Actor_scheduler_running()) goto unsupported_operation;
+      if (Actor_scheduler_running()) {
+        caml_actor_scheduler_record_unsupported_primitive(*pc, 5);
+        goto unsupported_operation;
+      }
       Setup_for_c_call;
       accu = Primitive5(*pc)(accu, sp[2], sp[3], sp[4], sp[5]);
       Restore_after_c_call;
@@ -1319,7 +1341,10 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       Next;
     Instruct(C_CALLN): {
       int nargs;
-      if (Actor_scheduler_running()) goto unsupported_operation;
+      if (Actor_scheduler_running()) {
+        caml_actor_scheduler_record_unsupported_primitive(pc[1], pc[0]);
+        goto unsupported_operation;
+      }
       nargs = *pc++;
       *--sp = accu;
       Setup_for_c_call;
@@ -1543,6 +1568,27 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       goto suspend_interpreter;
 
     unsupported_operation:
+      if (Actor_scheduler_running() && actor_current_pc != NULL) {
+        opcode_t opcode = FIRST_UNIMPLEMENTED_OP;
+#ifdef THREADED_CODE
+        opcode_t threaded = *actor_current_pc;
+
+        for (opcode_t candidate = 0;
+             candidate < FIRST_UNIMPLEMENTED_OP;
+             candidate++) {
+          opcode_t encoded = (opcode_t)
+            ((const char *)jumptable[candidate] - jumptbl_base);
+
+          if (encoded == threaded) {
+            opcode = candidate;
+            break;
+          }
+        }
+#else
+        opcode = *actor_current_pc;
+#endif
+        caml_actor_scheduler_record_unsupported_opcode((uintnat)opcode);
+      }
       suspend_reason = CAML_BYTECODE_STOP_UNSUPPORTED;
       goto suspend_interpreter;
 

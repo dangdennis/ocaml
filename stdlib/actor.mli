@@ -43,6 +43,25 @@ type send_error =
   | Message_too_large
   | Unsupported_message of string
 
+type stats = {
+  live_actors : int;
+  runnable_actors : int;
+  blocked_actors : int;
+  total_spawned : int;
+  total_exited : int;
+  total_failed : int;
+  total_dispatches : int;
+  total_reduction_stops : int;
+  messages_sent : int;
+  messages_received : int;
+  messages_dropped : int;
+  mailbox_messages : int;
+}
+(** A deterministic snapshot of the current actor world's scheduler counts.
+    [runnable_actors] includes the actor taking the snapshot.
+    [messages_dropped] counts queued messages discarded when an actor retires.
+    Counters saturate at [max_int]. *)
+
 external run : (unit inbox -> unit) -> (unit, run_error) result
   = "caml_actor_run"
 (** [run root] suspends the host computation and runs [root] as actor zero.
@@ -72,3 +91,8 @@ external receive : 'message inbox -> 'message
 external yield : unit -> unit
   = "caml_actor_yield"
 (** [yield ()] places the current actor at the tail of the ready queue. *)
+
+external stats : unit -> stats
+  = "caml_actor_stats"
+(** [stats ()] snapshots scheduler and mailbox counts. It raises
+    [Invalid_argument] outside an actor world. *)

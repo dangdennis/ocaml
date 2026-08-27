@@ -38,6 +38,7 @@
 #define CODE_WORDS(code) (sizeof(code) / sizeof((code)[0]))
 
 CAMLextern value caml_int_compare(value left, value right);
+CAMLextern value caml_actor_send(value pid, value message);
 
 static opcode_t setfield_code[9];
 static opcode_t setvect_code[11];
@@ -54,6 +55,7 @@ static opcode_t object_code[3];
 static opcode_t debugger_code[2];
 static opcode_t unsupported_tag_code[4];
 static opcode_t quota_code[4];
+static opcode_t send_error_quota_code[6];
 static opcode_t poptrap_code[5];
 static int code_ready;
 static int poison_entries;
@@ -85,13 +87,16 @@ static void register_code(opcode_t *code, mlsize_t words)
 static int prepare_code(void)
 {
   int compare_primitive;
+  int send_primitive;
   int poison_primitive;
 
   if (code_ready) return 1;
   compare_primitive = primitive_index((c_primitive)caml_int_compare);
+  send_primitive = primitive_index((c_primitive)caml_actor_send);
   poison_primitive = primitive_index(
     (c_primitive)caml_actor_test_runtime_fence_poison);
-  if (compare_primitive < 0 || poison_primitive < 0) return 0;
+  if (compare_primitive < 0 || send_primitive < 0
+      || poison_primitive < 0) return 0;
 
   caml_set_instruction(&setfield_code[0], CONST0);
   caml_set_instruction(&setfield_code[1], MAKEBLOCK1);
@@ -202,6 +207,13 @@ static int prepare_code(void)
   quota_code[2] = 0;
   caml_set_instruction(&quota_code[3], STOP);
 
+  caml_set_instruction(&send_error_quota_code[0], CONST0);
+  caml_set_instruction(&send_error_quota_code[1], PUSH);
+  caml_set_instruction(&send_error_quota_code[2], CONST0);
+  caml_set_instruction(&send_error_quota_code[3], C_CALL2);
+  send_error_quota_code[4] = send_primitive;
+  caml_set_instruction(&send_error_quota_code[5], STOP);
+
   caml_set_instruction(&poptrap_code[0], PUSHTRAP);
   poptrap_code[1] = 2;
   caml_set_instruction(&poptrap_code[2], POPTRAP);
@@ -224,6 +236,7 @@ static int prepare_code(void)
   register_code(debugger_code, CODE_WORDS(debugger_code));
   register_code(unsupported_tag_code, CODE_WORDS(unsupported_tag_code));
   register_code(quota_code, CODE_WORDS(quota_code));
+  register_code(send_error_quota_code, CODE_WORDS(send_error_quota_code));
   register_code(poptrap_code, CODE_WORDS(poptrap_code));
   code_ready = 1;
   return 1;
@@ -398,6 +411,9 @@ CAMLprim value caml_actor_test_runtime_fence(value unit)
                     CAML_ACTOR_FAILURE_UNSUPPORTED), 34);
   REQUIRE(run_actor(scheduler, quota_code, CODE_WORDS(quota_code),
                     1, CAML_ACTOR_FAILURE_HEAP_EXHAUSTED), 35);
+  REQUIRE(run_actor(scheduler, send_error_quota_code,
+                    CODE_WORDS(send_error_quota_code), 1,
+                    CAML_ACTOR_FAILURE_HEAP_EXHAUSTED), 59);
 
   REQUIRE(caml_actor_scheduler_spawn_code(
             scheduler, poptrap_code, sizeof(poptrap_code), Atom(0), 0,
