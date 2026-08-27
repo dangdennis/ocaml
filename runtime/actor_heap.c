@@ -401,7 +401,7 @@ static int gc_root_valid(const struct caml_actor_heap *heap, value root)
   if (Is_long(root) || canonical_atom(root)) return 1;
   lookup_space_value(heap, heap->active_space, root, &local);
   if (local.exact) return 1;
-  return caml_actor_world_value_is_frozen(root);
+  return caml_actor_world_value_is_approved(root);
 }
 
 static void validate_gc_root(void *data, value root,
@@ -464,7 +464,7 @@ static void forward_gc_root(void *data, value root,
   if (!context->valid || Is_long(root) || canonical_atom(root)) return;
   lookup_space_value(
     context->heap, context->from_space, root, &source);
-  if (!source.exact && caml_actor_world_value_is_frozen(root)) return;
+  if (!source.exact && caml_actor_world_value_is_approved(root)) return;
   if (!source.exact) {
     context->valid = 0;
     return;
@@ -604,7 +604,7 @@ static enum caml_actor_heap_verify_error verify_edge(
   }
 
   if (canonical_atom(target)) return CAML_ACTOR_HEAP_VERIFY_OK;
-  if (caml_actor_world_value_is_frozen(target)) {
+  if (caml_actor_world_value_is_approved(target)) {
     return CAML_ACTOR_HEAP_VERIFY_OK;
   }
   if (Is_young(target)) return CAML_ACTOR_HEAP_VERIFY_HOST_YOUNG_EDGE;
@@ -956,33 +956,138 @@ void caml_actor_heap_note_shared_bypass(struct caml_actor_heap *heap)
 static int actor_store_value_supported(struct caml_actor_heap *heap,
                                        value new_value)
 {
-  struct actor_value_lookup lookup;
+  struct actor_space_lookup lookup;
+  header_t expected;
 
   if (Is_long(new_value)) return 1;
   if (new_value == 0) return 0;
-  lookup_actor_value(new_value, &lookup);
-  if (lookup.heap != NULL) {
-    return lookup.heap == heap && lookup.exact && !lookup.malformed;
+  if (heap != NULL && heap->active_space <= 1) {
+    lookup_space_value(heap, heap->active_space, new_value, &lookup);
+    if (lookup.exact) {
+      expected = heap->shadow_headers[heap->active_space]
+        [lookup.header_offset];
+      return expected != 0 && Hd_val(lookup.base) == expected;
+    }
   }
   return canonical_atom(new_value)
-    || caml_actor_world_value_is_frozen(new_value);
+    || caml_actor_world_value_is_approved(new_value);
+}
+
+static int current_actor_value(
+  struct caml_actor_heap *heap, value candidate,
+  struct actor_space_lookup *lookup, header_t *header)
+{
+  header_t expected;
+
+  if (heap == NULL || lookup == NULL || header == NULL
+      || heap->active_space > 1 || !Is_block(candidate)) {
+    return 0;
+  }
+  lookup_space_value(heap, heap->active_space, candidate, lookup);
+  if (!lookup->exact) return 0;
+  expected = heap->shadow_headers[heap->active_space]
+    [lookup->header_offset];
+  if (expected == 0 || Hd_val(lookup->base) != expected) return 0;
+  *header = expected;
+  return 1;
 }
 
 static int current_actor_block(value block, value *canonical,
                                mlsize_t *wosize, tag_t *tag)
 {
   struct caml_actor_heap *heap = caml_actor_heap_current();
-  struct actor_value_lookup lookup;
+  struct actor_space_lookup lookup;
+  header_t header;
 
-  if (heap == NULL || !Is_block(block)) return 0;
-  lookup_actor_value(block, &lookup);
-  if (lookup.heap != heap || !lookup.exact || lookup.malformed
-      || lookup.canonical != block) {
+  if (!current_actor_value(heap, block, &lookup, &header)
+      || lookup.infix_offset != 0 || lookup.base != block) {
     return 0;
   }
-  *canonical = lookup.canonical;
-  *wosize = Wosize_val(lookup.canonical);
-  *tag = Tag_val(lookup.canonical);
+  *canonical = lookup.base;
+  *wosize = Wosize_hd(header);
+  *tag = Tag_hd(header);
+  return 1;
+}
+
+int caml_actor_heap_read_field(value block, mlsize_t field,
+                               value *result)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  value canonical;
+  value current;
+  mlsize_t wosize;
+  tag_t tag;
+
+  if (heap == NULL || result == NULL
+      || !current_actor_block(block, &canonical, &wosize, &tag)
+      || tag >= Forcing_tag || field >= wosize) {
+    return 0;
+  }
+  current = Field(canonical, field);
+  if (!actor_store_value_supported(heap, current)) return 0;
+  *result = current;
+  return 1;
+}
+
+int caml_actor_heap_read_closure_env(value closure, mlsize_t field,
+                                     value *result)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  struct actor_space_lookup lookup;
+  header_t header;
+  uintptr_t byte_offset;
+  mlsize_t word_offset;
+  mlsize_t wosize;
+  mlsize_t environment_start;
+  value info;
+  value current;
+
+  if (result == NULL
+      || !current_actor_value(heap, closure, &lookup, &header)
+      || Tag_hd(header) != Closure_tag
+      || (uintptr_t)closure < (uintptr_t)lookup.base) {
+    return 0;
+  }
+  byte_offset = (uintptr_t)closure - (uintptr_t)lookup.base;
+  if (byte_offset % sizeof(value) != 0) return 0;
+  word_offset = byte_offset / sizeof(value);
+  wosize = Wosize_hd(header);
+  if (word_offset > wosize || wosize - word_offset <= 1) return 0;
+  info = Closinfo_val(closure);
+  if (!Is_long(info)) return 0;
+  environment_start = Start_env_closinfo(info);
+  if (environment_start < 2 || field < environment_start
+      || field >= wosize - word_offset) {
+    return 0;
+  }
+  current = Field(closure, field);
+  if (!actor_store_value_supported(heap, current)) return 0;
+  *result = current;
+  return 1;
+}
+
+int caml_actor_heap_closure_wosize(value closure, mlsize_t *wosize)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  struct actor_space_lookup lookup;
+  header_t header;
+  value info;
+  mlsize_t size;
+
+  if (wosize == NULL
+      || !current_actor_value(heap, closure, &lookup, &header)
+      || lookup.infix_offset != 0 || lookup.base != closure
+      || Tag_hd(header) != Closure_tag) {
+    return 0;
+  }
+  size = Wosize_hd(header);
+  if (size < 2) return 0;
+  info = Closinfo_val(closure);
+  if (!Is_long(info) || Start_env_closinfo(info) < 2
+      || Start_env_closinfo(info) > size) {
+    return 0;
+  }
+  *wosize = size;
   return 1;
 }
 

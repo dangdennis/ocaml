@@ -8025,6 +8025,13 @@ lex/table.cmo : \
 lex/table.cmx : \
     lex/table.cmi
 lex/table.cmi :
+tools/bytecode_shape.cmo : \
+    bytecomp/opcodes.cmi \
+    tools/bytecode_shape.cmi
+tools/bytecode_shape.cmx : \
+    bytecomp/opcodes.cmx \
+    tools/bytecode_shape.cmi
+tools/bytecode_shape.cmi :
 tools/cmpbyt.cmo : \
     bytecomp/bytesections.cmi \
     tools/cmpbyt.cmi
@@ -8040,7 +8047,6 @@ tools/cvt_emit.cmi :
 tools/dumpobj.cmo : \
     bytecomp/symtable.cmi \
     tools/opnames.cmi \
-    bytecomp/opcodes.cmi \
     utils/misc.cmi \
     parsing/location.cmi \
     bytecomp/instruct.cmi \
@@ -8049,11 +8055,11 @@ tools/dumpobj.cmo : \
     utils/compression.cmi \
     file_formats/cmo_format.cmi \
     bytecomp/bytesections.cmi \
+    tools/bytecode_shape.cmi \
     tools/dumpobj.cmi
 tools/dumpobj.cmx : \
     bytecomp/symtable.cmx \
     tools/opnames.cmx \
-    bytecomp/opcodes.cmx \
     utils/misc.cmx \
     parsing/location.cmx \
     bytecomp/instruct.cmx \
@@ -8062,6 +8068,7 @@ tools/dumpobj.cmx : \
     utils/compression.cmx \
     file_formats/cmo_format.cmi \
     bytecomp/bytesections.cmx \
+    tools/bytecode_shape.cmx \
     tools/dumpobj.cmi
 tools/dumpobj.cmi :
 tools/gen_sizeclasses.cmo :
@@ -8147,6 +8154,23 @@ tools/objinfo.cmx : \
     utils/binutils.cmx \
     tools/objinfo.cmi
 tools/objinfo.cmi :
+tools/ocamlactorcheck.cmo : \
+    bytecomp/symtable.cmi \
+    tools/opnames.cmi \
+    bytecomp/opcodes.cmi \
+    utils/misc.cmi \
+    bytecomp/bytesections.cmi \
+    tools/bytecode_shape.cmi \
+    tools/ocamlactorcheck.cmi
+tools/ocamlactorcheck.cmx : \
+    bytecomp/symtable.cmx \
+    tools/opnames.cmx \
+    bytecomp/opcodes.cmx \
+    utils/misc.cmx \
+    bytecomp/bytesections.cmx \
+    tools/bytecode_shape.cmx \
+    tools/ocamlactorcheck.cmi
+tools/ocamlactorcheck.cmi :
 tools/ocamlcmt.cmo : \
     typing/untypeast.cmi \
     typing/stypes.cmi \

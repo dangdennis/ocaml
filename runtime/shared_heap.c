@@ -210,6 +210,50 @@ static int large_list_find_block(large_alloc *list, value candidate,
   return 0;
 }
 
+static int pool_list_visit_blocks(
+  pool *list, caml_shared_heap_block_visitor visitor, void *data)
+{
+  for (pool *current = list; current != NULL; current = current->next) {
+    sizeclass size = current->sz;
+    header_t *cursor = POOL_FIRST_BLOCK(current, size);
+    header_t *end = POOL_END(current);
+    mlsize_t slot_words = wsize_sizeclass[size];
+
+    while (cursor + slot_words <= end) {
+      header_t header =
+        (header_t)atomic_load_relaxed((atomic_uintnat *)cursor);
+
+      if (POOL_BLOCK_FREE_HD(header)) {
+        cursor += slot_words * Wosize_hd(header);
+      } else if (!Has_status_hd(header,
+                                caml_global_heap_state.GARBAGE)
+                 && Whsize_wosize(Wosize_hd(header)) <= slot_words
+                 && !visitor(Val_hp(cursor), header, data)) {
+        return 0;
+      }
+      cursor += slot_words;
+    }
+    CAMLassert(cursor == end);
+  }
+  return 1;
+}
+
+static int large_list_visit_blocks(
+  large_alloc *list, caml_shared_heap_block_visitor visitor, void *data)
+{
+  for (large_alloc *current = list;
+       current != NULL; current = current->next) {
+    value *header = (value *)((char *)current + LARGE_ALLOC_HEADER_SZ);
+    header_t hd = Hd_hp(header);
+
+    if (!Has_status_hd(hd, caml_global_heap_state.GARBAGE)
+        && !visitor(Val_hp(header), hd, data)) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 int caml_shared_heap_contains_block(
   struct caml_heap_state *heap, value candidate)
 {
@@ -258,6 +302,28 @@ int caml_shared_heap_find_block(
            heap->swept_large, candidate, block, offset_bytes)
     || large_list_find_block(
          heap->unswept_large, candidate, block, offset_bytes);
+}
+
+int caml_shared_heap_visit_blocks(
+  struct caml_heap_state *heap,
+  caml_shared_heap_block_visitor visitor, void *data)
+{
+  if (heap == NULL || visitor == NULL) return 0;
+
+  for (sizeclass size = 0; size < NUM_SIZECLASSES; size++) {
+    if (!pool_list_visit_blocks(
+          heap->avail_pools[size], visitor, data)
+        || !pool_list_visit_blocks(
+             heap->full_pools[size], visitor, data)
+        || !pool_list_visit_blocks(
+             heap->unswept_avail_pools[size], visitor, data)
+        || !pool_list_visit_blocks(
+             heap->unswept_full_pools[size], visitor, data)) {
+      return 0;
+    }
+  }
+  return large_list_visit_blocks(heap->swept_large, visitor, data)
+    && large_list_visit_blocks(heap->unswept_large, visitor, data);
 }
 
 /* You need to hold the [pool_freelist] lock to call these functions. */
