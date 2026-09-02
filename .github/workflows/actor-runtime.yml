@@ -63,8 +63,22 @@ jobs:
           cp testsuite/benchmarks/runtime-actors/actor_bench.ml "$bench_dir/"
           ./runtime/ocamlrun ./ocamlc -I stdlib \
             -o "$bench_dir/actor_bench.byte" "$bench_dir/actor_bench.ml"
-          ACTOR_BENCH_SCALE=1 \
+          ulimit -c unlimited
+          set +e
+          MALLOC_PERTURB_=165 ACTOR_BENCH_SCALE=10 OCAMLRUNPARAM=b \
             ./runtime/ocamlrun "$bench_dir/actor_bench.byte"
+          status=$?
+          set -e
+          if test "$status" -ne 0; then
+            ls -lh core* || true
+            if command -v gdb >/dev/null 2>&1 && test -f core; then
+              gdb -q -batch \
+                -ex "set pagination off" \
+                -ex "thread apply all bt full" \
+                ./runtime/ocamlrun core || true
+            fi
+            exit "$status"
+          fi
 
   sanitizer:
     name: ${{ matrix.name }} actor tests
