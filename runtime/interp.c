@@ -153,6 +153,56 @@ sp is a local copy of the global variable Caml_state->current_stack->sp. */
   (result) = actor_allocated; \
 } while (0)
 
+#define Actor_read_field(result, block, field) do { \
+  value actor_read_block = (block); \
+  mlsize_t actor_read_index = (field); \
+  value actor_read_result; \
+  if (Actor_scheduler_running()) { \
+    if (!caml_actor_heap_read_field( \
+          actor_read_block, actor_read_index, &actor_read_result) \
+        && !caml_actor_world_read_frozen_field( \
+          actor_read_block, actor_read_index, &actor_read_result)) { \
+      goto unsupported_operation; \
+    } \
+  } else { \
+    actor_read_result = Field(actor_read_block, actor_read_index); \
+  } \
+  (result) = actor_read_result; \
+} while (0)
+
+#define Actor_read_closure_env(result, closure, field) do { \
+  value actor_read_closure = (closure); \
+  mlsize_t actor_read_index = (field); \
+  value actor_read_result; \
+  if (Actor_scheduler_running()) { \
+    if (!caml_actor_heap_read_closure_env( \
+          actor_read_closure, actor_read_index, &actor_read_result) \
+        && !caml_actor_world_read_frozen_closure_env( \
+          actor_read_closure, actor_read_index, &actor_read_result)) { \
+      goto unsupported_operation; \
+    } \
+  } else { \
+    actor_read_result = Field(actor_read_closure, actor_read_index); \
+  } \
+  (result) = actor_read_result; \
+} while (0)
+
+#define Actor_closure_wosize(result, closure) do { \
+  value actor_read_closure = (closure); \
+  mlsize_t actor_read_wosize; \
+  if (Actor_scheduler_running()) { \
+    if (!caml_actor_heap_closure_wosize( \
+          actor_read_closure, &actor_read_wosize) \
+        && !caml_actor_world_frozen_closure_wosize( \
+          actor_read_closure, &actor_read_wosize)) { \
+      goto unsupported_operation; \
+    } \
+  } else { \
+    actor_read_wosize = Wosize_val(actor_read_closure); \
+  } \
+  (result) = actor_read_wosize; \
+} while (0)
+
 #ifdef THREADED_CODE
 #define Restart_curr_instr \
   goto *((void*)(jumptbl_base + caml_debugger_saved_instruction(pc - 1)))
@@ -548,28 +598,28 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 /* Access in heap-allocated environment */
 
     Instruct(ENVACC1):
-      accu = Field(env, 1); Next;
+      Actor_read_closure_env(accu, env, 1); Next;
     Instruct(ENVACC2):
-      accu = Field(env, 2); Next;
+      Actor_read_closure_env(accu, env, 2); Next;
     Instruct(ENVACC3):
-      accu = Field(env, 3); Next;
+      Actor_read_closure_env(accu, env, 3); Next;
     Instruct(ENVACC4):
-      accu = Field(env, 4); Next;
+      Actor_read_closure_env(accu, env, 4); Next;
 
     Instruct(PUSHENVACC1):
-      *--sp = accu; accu = Field(env, 1); Next;
+      *--sp = accu; Actor_read_closure_env(accu, env, 1); Next;
     Instruct(PUSHENVACC2):
-      *--sp = accu; accu = Field(env, 2); Next;
+      *--sp = accu; Actor_read_closure_env(accu, env, 2); Next;
     Instruct(PUSHENVACC3):
-      *--sp = accu; accu = Field(env, 3); Next;
+      *--sp = accu; Actor_read_closure_env(accu, env, 3); Next;
     Instruct(PUSHENVACC4):
-      *--sp = accu; accu = Field(env, 4); Next;
+      *--sp = accu; Actor_read_closure_env(accu, env, 4); Next;
 
     Instruct(PUSHENVACC):
       *--sp = accu;
       Fallthrough;
     Instruct(ENVACC):
-      accu = Field(env, *pc++);
+      Actor_read_closure_env(accu, env, *pc++);
       Next;
 
 /* Function application */
@@ -721,10 +771,27 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       Next;
 
     Instruct(RESTART): {
-      int num_args = Wosize_val(env) - 3;
+      mlsize_t restart_wosize;
+      mlsize_t num_args;
+      value restarted_env;
+
+      Actor_closure_wosize(restart_wosize, env);
+      if (restart_wosize < 3) goto unsupported_operation;
+      if (Actor_scheduler_running()) {
+        value captured;
+
+        Actor_read_closure_env(restarted_env, env, 2);
+        for (mlsize_t field = 3; field < restart_wosize; field++) {
+          Actor_read_closure_env(captured, env, field);
+        }
+        (void)captured;
+      } else {
+        restarted_env = Field(env, 2);
+      }
+      num_args = restart_wosize - 3;
       sp -= num_args;
-      for (int i = 0; i < num_args; i++) sp[i] = Field(env, i + 3);
-      env = Field(env, 2);
+      for (mlsize_t i = 0; i < num_args; i++) sp[i] = Field(env, i + 3);
+      env = restarted_env;
       extra_args += num_args;
       Next;
     }
@@ -840,24 +907,69 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 
 /* Access to global variables */
 
-    Instruct(PUSHGETGLOBAL):
-      *--sp = accu;
-      Fallthrough;
-    Instruct(GETGLOBAL):
-      if (Actor_scheduler_running()) goto unsupported_operation;
-      accu = Field(caml_global_data, *pc);
+    Instruct(PUSHGETGLOBAL): {
+      if (Actor_scheduler_running()) {
+        value global;
+
+        if (!caml_actor_world_read_global((uintnat)*pc, &global)) {
+          goto unsupported_operation;
+        }
+        *--sp = accu;
+        accu = global;
+      } else {
+        *--sp = accu;
+        accu = Field(caml_global_data, *pc);
+      }
       pc++;
       Next;
+    }
+    Instruct(GETGLOBAL): {
+      if (Actor_scheduler_running()) {
+        value global;
 
-    Instruct(PUSHGETGLOBALFIELD):
-      *--sp = accu;
-      Fallthrough;
+        if (!caml_actor_world_read_global((uintnat)*pc, &global)) {
+          goto unsupported_operation;
+        }
+        accu = global;
+      } else {
+        accu = Field(caml_global_data, *pc);
+      }
+      pc++;
+      Next;
+    }
+
+    Instruct(PUSHGETGLOBALFIELD): {
+      if (Actor_scheduler_running()) {
+        value global_field;
+
+        if (!caml_actor_world_read_global_field(
+              (uintnat)pc[0], (mlsize_t)pc[1], &global_field)) {
+          goto unsupported_operation;
+        }
+        *--sp = accu;
+        accu = global_field;
+      } else {
+        *--sp = accu;
+        accu = Field(caml_global_data, pc[0]);
+        accu = Field(accu, pc[1]);
+      }
+      pc += 2;
+      Next;
+    }
     Instruct(GETGLOBALFIELD): {
-      if (Actor_scheduler_running()) goto unsupported_operation;
-      accu = Field(caml_global_data, *pc);
-      pc++;
-      accu = Field(accu, *pc);
-      pc++;
+      if (Actor_scheduler_running()) {
+        value global_field;
+
+        if (!caml_actor_world_read_global_field(
+              (uintnat)pc[0], (mlsize_t)pc[1], &global_field)) {
+          goto unsupported_operation;
+        }
+        accu = global_field;
+      } else {
+        accu = Field(caml_global_data, pc[0]);
+        accu = Field(accu, pc[1]);
+      }
+      pc += 2;
       Next;
     }
 
@@ -967,15 +1079,15 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
 /* Access to components of blocks */
 
     Instruct(GETFIELD0):
-      accu = Field(accu, 0); Next;
+      Actor_read_field(accu, accu, 0); Next;
     Instruct(GETFIELD1):
-      accu = Field(accu, 1); Next;
+      Actor_read_field(accu, accu, 1); Next;
     Instruct(GETFIELD2):
-      accu = Field(accu, 2); Next;
+      Actor_read_field(accu, accu, 2); Next;
     Instruct(GETFIELD3):
-      accu = Field(accu, 3); Next;
+      Actor_read_field(accu, accu, 3); Next;
     Instruct(GETFIELD):
-      accu = Field(accu, *pc); pc++; Next;
+      Actor_read_field(accu, accu, *pc); pc++; Next;
     Instruct(GETFLOATFIELD): {
       double d = Double_flat_field(accu, *pc++);
       if (Actor_scheduler_running()) {
@@ -1066,7 +1178,7 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       Next;
     }
     Instruct(GETVECTITEM):
-      accu = Field(accu, Long_val(sp[0]));
+      Actor_read_field(accu, accu, Long_val(sp[0]));
       sp += 1;
       Next;
     Instruct(SETVECTITEM): {

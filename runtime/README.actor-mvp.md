@@ -431,6 +431,37 @@ mixes exception, heap-exhaustion, and normal-report actions and accepts a
 canonical `ACTOR_TRACE` replay. See `HACKING.actor-mvp.md` for the fast build,
 test, debug, and replay loop.
 
+## Layer 9 frozen global reads
+
+Layer 9 prepares an indexed, exact snapshot of the host global graph before
+publishing actor zero. Actor execution admits `GETGLOBAL`, `PUSHGETGLOBAL`,
+`GETGLOBALFIELD`, and `PUSHGETGLOBALFIELD` only when the referenced value and
+field match that snapshot. Direct field and closure-environment reads remain
+checked, so custom or abstract blocks, weak values, ephemerons, finalizable
+values, and runtime metadata cannot become actor-visible through an approved
+container or closure. Ordinary scanned immutable graphs, strings, floats,
+double arrays, and same-image closures are readable. Aliases, cycles, and
+closure identities stay shared and exact; these frozen blocks are never moved
+by an actor collection.
+
+`SETGLOBAL`, inline writes, and mutating primitives remain forbidden and fail
+before changing host state. The snapshot is revalidated while actor mode is
+active and before thaw completes. This supports ordinary read-only module
+lookups; it does not make shared mutable module state actor-local.
+
+The mailbox boundary is narrower. A non-immediate message graph must be owned
+by the sending actor, so a string or data graph read directly from frozen
+globals is rejected as `Unsupported_message` and no envelope is published.
+Copying supported frozen graphs into messages is deferred to a later layer.
+
+`ocamlactorcheck` is a first-pass advisory inventory for compiler-produced
+bytecode. It lists global-read and `SETGLOBAL` instructions and `C_CALL*` sites,
+including available symbol names, primitive names, and arities. It leaves
+primitive capabilities unclassified and does not perform control-flow or
+reachability analysis, validate branch targets or frozen graphs, enumerate
+every mutation opcode, or certify runtime compatibility. Runtime checks remain
+authoritative.
+
 ## Isolation invariants
 
 Debug builds verify these rules at every mandatory checkpoint:

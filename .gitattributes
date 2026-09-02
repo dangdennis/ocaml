@@ -130,6 +130,7 @@ testsuite/tests/**                                      typo.missing-header typo
 testsuite/tests/lib-bigarray-2/bigarrf.f                typo.tab linguist-language=Fortran
 testsuite/tests/lib-unix/win-stat/fakeclock.c           typo.missing-header=false
 testsuite/tests/runtime-actors/closure_copy_stubs.c     typo.missing-header=false
+testsuite/tests/runtime-actors/frozen_global_opcode_stubs.c typo.missing-header=false
 testsuite/tests/runtime-actors/runtime_fence_stubs.c    typo.missing-header=false
 testsuite/tests/runtime-actors/wire_codec_stubs.c       typo.missing-header=false
 testsuite/tests/misc-unsafe/almabench.ml                typo.long-line

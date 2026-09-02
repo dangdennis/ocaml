@@ -194,6 +194,7 @@ CAMLprim value caml_actor_run(value root)
   struct caml_actor_scheduler *scheduler = NULL;
   struct caml_actor_prepared_spawn *prepared = NULL;
   enum caml_actor_spawn_status spawn_status;
+  enum caml_actor_global_status global_status;
   enum caml_actor_world_status world_status;
   uintnat root_pid = 0;
   int frozen = 0;
@@ -201,6 +202,22 @@ CAMLprim value caml_actor_run(value root)
   world_status = caml_actor_world_freeze();
   if (world_status != CAML_ACTOR_WORLD_OK) goto finished;
   frozen = 1;
+  global_status = caml_actor_world_prepare_global_image();
+  if (global_status != CAML_ACTOR_GLOBAL_OK) {
+    outcome = ACTOR_RUN_ROOT_FAILED;
+    switch (global_status) {
+    case CAML_ACTOR_GLOBAL_INVALID_IMAGE:
+      message = "invalid actor global image";
+      break;
+    case CAML_ACTOR_GLOBAL_RESOURCE_UNAVAILABLE:
+      message = "actor global image resources unavailable";
+      break;
+    default:
+      message = "actor global image preparation unavailable";
+      break;
+    }
+    goto cleanup;
+  }
   scheduler = caml_actor_scheduler_create(
     ACTOR_MVP_CAPACITY, ACTOR_MVP_REDUCTIONS);
   if (scheduler == NULL) goto cleanup;

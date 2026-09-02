@@ -539,7 +539,8 @@ clean::
 	  tools/ocamlobjinfo $(addprefix tools/ocamlobjinfo,.opt .exe .opt.exe)
 
 TOOLS_NAT = $(TOOLS_TO_INSTALL_NAT)
-TOOLS_BYT = $(TOOLS_TO_INSTALL_BYT) dumpobj primreq stripdebug cmpbyt
+TOOLS_BYT = \
+  $(TOOLS_TO_INSTALL_BYT) dumpobj ocamlactorcheck primreq stripdebug cmpbyt
 
 TOOLS_NAT_PROGRAMS = $(addprefix tools/,$(TOOLS_NAT))
 TOOLS_BYT_PROGRAMS = $(addprefix tools/,$(TOOLS_BYT))
@@ -2492,7 +2493,17 @@ ocamlcmt_SOURCES = tools/ocamlcmt.mli tools/ocamlcmt.ml
 dumpobj_LIBRARIES = $(addprefix compilerlibs/,ocamlcommon ocamlbytecomp)
 dumpobj_SOURCES = $(addprefix tools/, \
   opnames.mli opnames.ml \
+  bytecode_shape.mli bytecode_shape.ml \
   dumpobj.mli dumpobj.ml)
+
+# Advisory inventory of bytecode operations relevant to actor execution.
+# This first-pass tool is built with the tree but deliberately not installed.
+ocamlactorcheck_LIBRARIES = \
+  $(addprefix compilerlibs/,ocamlcommon ocamlbytecomp)
+ocamlactorcheck_SOURCES = $(addprefix tools/, \
+  opnames.mli opnames.ml \
+  bytecode_shape.mli bytecode_shape.ml \
+  ocamlactorcheck.mli ocamlactorcheck.ml)
 
 make_opcodes = tools/make_opcodes$(EXE)
 

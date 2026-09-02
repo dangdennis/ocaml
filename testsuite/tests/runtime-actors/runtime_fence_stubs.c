@@ -60,6 +60,23 @@ static opcode_t poptrap_code[5];
 static int code_ready;
 static int poison_entries;
 
+struct shared_heap_visit_probe {
+  value target;
+  uintnat visits;
+  int found;
+};
+
+static int probe_shared_block(value block, header_t header, void *data)
+{
+  struct shared_heap_visit_probe *probe = data;
+
+  probe->visits++;
+  if (block == probe->target) {
+    probe->found = Hd_val(block) == header;
+  }
+  return 1;
+}
+
 CAMLprim value caml_actor_test_runtime_fence_poison(
   value left, value right)
 {
@@ -293,25 +310,35 @@ static int run_actor(struct caml_actor_scheduler *scheduler,
   return 1;
 }
 
-CAMLprim value caml_actor_test_runtime_fence(value unit)
+CAMLprim value caml_actor_test_runtime_fence(value even, value odd)
 {
-  CAMLparam1(unit);
-  CAMLlocal2(registered_block, unregistered_block);
+  CAMLparam2(even, odd);
+  CAMLlocal3(registered_block, unregistered_block, invalid_closure);
+  CAMLlocal3(registered_parent, registered_child, invalid_parent);
   struct caml_actor_scheduler *scheduler = NULL;
   struct caml_actor_heap *ledger_heap = NULL;
   struct caml_actor_heap_verify_result verification;
+  struct shared_heap_visit_probe visit_probe;
   enum caml_actor_heap_alloc_error allocation_error;
+  enum caml_actor_global_status global_status;
   enum caml_actor_world_status world_status;
   struct caml_actor_step step;
   struct caml_actor_snapshot snapshot;
   value actor_block;
+  value closure_base;
+  value field_value;
+  value global_value;
   value interior;
   value global_before;
+  mlsize_t closure_offset;
+  mlsize_t odd_offset;
+  mlsize_t global_field = 0;
+  mlsize_t global_index = 0;
+  int found_global_field = 0;
   uintnat pid;
   int frozen = 0;
   int code = 0;
 
-  (void)unit;
   if (caml_check_pending_actions()) caml_process_pending_actions();
   REQUIRE(prepare_code(), 1);
 
@@ -320,12 +347,96 @@ CAMLprim value caml_actor_test_runtime_fence(value unit)
   Field(registered_block, 1) = Val_long(19);
   unregistered_block = caml_alloc_small(1, 0);
   Field(unregistered_block, 0) = Val_long(23);
+  invalid_closure = caml_alloc_small(2, Closure_tag);
+  Field(invalid_closure, 0) =
+    (value)(setfield_code + CODE_WORDS(setfield_code));
+  Closinfo_val(invalid_closure) = Make_closinfo(0, 2);
+  registered_child = caml_alloc_small(1, 0);
+  registered_parent = caml_alloc_small(1, 0);
+  Field(registered_parent, 0) = registered_child;
+  Field(registered_child, 0) = registered_parent;
+  invalid_parent = caml_alloc_small(2, 0);
+  Field(invalid_parent, 0) = unregistered_block;
+  Field(invalid_parent, 1) = invalid_closure;
 
   world_status = caml_actor_world_freeze();
   REQUIRE(world_status == CAML_ACTOR_WORLD_OK, 2);
   frozen = 1;
   REQUIRE(caml_actor_world_is_frozen(), 3);
   REQUIRE(caml_actor_world_freeze() == CAML_ACTOR_WORLD_BUSY, 4);
+
+  visit_probe.target = caml_global_data;
+  visit_probe.visits = 0;
+  visit_probe.found = 0;
+  REQUIRE(caml_shared_heap_visit_blocks(
+            Caml_state->shared_heap, probe_shared_block, &visit_probe), 77);
+  REQUIRE(visit_probe.visits > 0 && visit_probe.found
+          && visit_probe.visits
+               == caml_heap_blocks(Caml_state->shared_heap), 78);
+
+  global_before = Field(caml_global_data, 0);
+  interior = (value)&Field(registered_block, 1);
+  Field(caml_global_data, 0) = interior;
+  global_status = caml_actor_world_prepare_global_image();
+  Field(caml_global_data, 0) = global_before;
+  REQUIRE(global_status == CAML_ACTOR_GLOBAL_INVALID_IMAGE, 74);
+  REQUIRE(caml_actor_world_prepare_global_image()
+            == CAML_ACTOR_GLOBAL_OK, 59);
+  REQUIRE(caml_actor_world_prepare_global_image()
+            == CAML_ACTOR_GLOBAL_BUSY, 60);
+  REQUIRE(caml_actor_world_read_global(0, &global_value), 61);
+  REQUIRE(global_value == Field(caml_global_data, 0), 62);
+  REQUIRE(!caml_actor_world_read_global(
+            Wosize_val(caml_global_data), &global_value), 63);
+  for (mlsize_t index = 0; index < Wosize_val(caml_global_data); index++) {
+    value candidate = Field(caml_global_data, index);
+    value base;
+    mlsize_t offset;
+
+    if (Is_block(candidate)
+        && caml_shared_heap_find_block(
+             Caml_state->shared_heap, candidate, &base, &offset)
+        && base == candidate && Tag_val(base) < Forcing_tag
+        && Wosize_val(base) > 0) {
+      global_index = index;
+      global_field = 0;
+      found_global_field = 1;
+      break;
+    }
+  }
+  REQUIRE(found_global_field, 64);
+  REQUIRE(caml_actor_world_read_global_field(
+            global_index, global_field, &field_value), 65);
+  REQUIRE(field_value == Field(Field(caml_global_data, global_index),
+                               global_field), 66);
+  REQUIRE(!caml_actor_world_read_global_field(
+            global_index,
+            Wosize_val(Field(caml_global_data, global_index)),
+            &field_value), 67);
+
+  REQUIRE(caml_shared_heap_find_block(
+            Caml_state->shared_heap, even,
+            &closure_base, &closure_offset), 68);
+  REQUIRE(caml_shared_heap_find_block(
+            Caml_state->shared_heap, odd,
+            &global_value, &odd_offset), 69);
+  REQUIRE(global_value == closure_base
+          && (closure_offset == 0 || odd_offset == 0)
+          && closure_offset != odd_offset, 70);
+  REQUIRE(caml_actor_world_register_frozen(closure_base), 71);
+  REQUIRE(caml_actor_world_value_is_approved(even)
+          && caml_actor_world_value_is_approved(odd), 72);
+  REQUIRE(caml_actor_world_value_is_frozen(even)
+          && caml_actor_world_value_is_frozen(odd), 73);
+  REQUIRE(!caml_actor_world_register_frozen(invalid_closure), 75);
+  REQUIRE(!caml_actor_world_value_is_approved(invalid_closure), 76);
+  REQUIRE(!caml_actor_world_register_frozen(invalid_parent), 79);
+  REQUIRE(!caml_actor_world_value_is_approved(invalid_parent)
+          && !caml_actor_world_value_is_approved(unregistered_block), 80);
+  REQUIRE(caml_actor_world_register_frozen(registered_parent), 81);
+  REQUIRE(caml_actor_world_value_is_approved(registered_parent)
+          && caml_actor_world_value_is_approved(registered_child)
+          && caml_actor_world_value_is_frozen(registered_child), 82);
 
   REQUIRE(!caml_actor_world_value_is_frozen(registered_block), 5);
   REQUIRE(caml_actor_world_register_frozen(registered_block), 6);
@@ -334,9 +445,21 @@ CAMLprim value caml_actor_test_runtime_fence(value unit)
   REQUIRE(!caml_actor_world_value_is_frozen(unregistered_block), 9);
   REQUIRE(!caml_actor_world_register_frozen((value)2), 10);
   REQUIRE(!caml_actor_world_value_is_frozen((value)2), 11);
-  interior = (value)&Field(registered_block, 1);
   REQUIRE(!caml_actor_world_register_frozen(interior), 12);
   REQUIRE(!caml_actor_world_value_is_frozen(interior), 13);
+  for (uintnat repeat = 0; repeat < 128; repeat++) {
+    REQUIRE(caml_actor_world_read_global(0, &global_value)
+            && global_value == Field(caml_global_data, 0), 83);
+    REQUIRE(caml_actor_world_read_global_field(
+              global_index, global_field, &field_value)
+            && field_value
+                 == Field(Field(caml_global_data, global_index),
+                          global_field), 84);
+    REQUIRE(caml_actor_world_value_is_approved(registered_parent)
+            && caml_actor_world_value_is_approved(registered_child)
+            && caml_actor_world_value_is_approved(even)
+            && caml_actor_world_value_is_approved(odd), 85);
+  }
   REQUIRE(caml_shared_try_alloc(
             Caml_state->shared_heap, 1, 0, 0) == NULL, 53);
 
