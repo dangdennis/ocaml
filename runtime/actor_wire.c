@@ -290,11 +290,16 @@ static int discover_graph(struct actor_wire_context *context, value root)
 {
   if (!discover_value(context, root)) return 0;
   for (uintnat index = 0; index < context->node_count; index++) {
-    struct actor_wire_source_node *node = &context->nodes[index];
+    value source = context->nodes[index].source;
+    mlsize_t wosize = context->nodes[index].wosize;
+    tag_t tag = context->nodes[index].tag;
 
-    if (node->tag >= Forcing_tag) continue;
-    for (mlsize_t field = 0; field < node->wosize; field++) {
-      if (!discover_value(context, Field(node->source, field))) return 0;
+    /* [discover_value] may grow [context->nodes], invalidating pointers into
+       it.  Snapshot this node's traversal metadata before discovering any
+       child. */
+    if (tag >= Forcing_tag) continue;
+    for (mlsize_t field = 0; field < wosize; field++) {
+      if (!discover_value(context, Field(source, field))) return 0;
     }
   }
   return 1;
