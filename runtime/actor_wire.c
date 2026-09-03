@@ -549,6 +549,22 @@ int caml_actor_wire_verify(const struct caml_actor_envelope *envelope)
     && expected_raw == envelope->raw_bytes;
 }
 
+int caml_actor_wire_encoded_bytes(
+  const struct caml_actor_envelope *envelope, uintnat *encoded_bytes)
+{
+  uintnat words;
+
+  if (encoded_bytes != NULL) *encoded_bytes = 0;
+  if (encoded_bytes == NULL || !caml_actor_wire_verify(envelope)
+      || envelope->graph_words == CAML_UINTNAT_MAX) {
+    return 0;
+  }
+  words = envelope->graph_words + 1; /* Canonical root token. */
+  if (words > CAML_UINTNAT_MAX / sizeof(value)) return 0;
+  *encoded_bytes = words * sizeof(value);
+  return 1;
+}
+
 static int decode_token(const struct caml_actor_envelope *envelope,
                         const value *targets,
                         const struct actor_wire_token *token,

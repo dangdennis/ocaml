@@ -99,6 +99,7 @@ enum caml_actor_control_request {
 enum caml_actor_send_status {
   CAML_ACTOR_SEND_OK = 0,
   CAML_ACTOR_SEND_NO_SUCH_ACTOR,
+  CAML_ACTOR_SEND_QUOTA,
   CAML_ACTOR_SEND_RESOURCE_UNAVAILABLE,
   CAML_ACTOR_SEND_INVALID_CONTEXT
 };
@@ -130,10 +131,25 @@ struct caml_actor_scheduler_stats {
   uintnat messages_received;
   uintnat messages_dropped;
   uintnat mailbox_messages;
+  uintnat mailbox_bytes;
+  uintnat mailbox_quota_failures;
+  uintnat current_heap_words;
+  uintnat maximum_heap_words;
+  uintnat heap_growths;
+  uintnat actor_capacity;
+  uintnat reduction_budget;
+  uintnat message_word_limit;
+  uintnat mailbox_message_limit;
+  uintnat mailbox_byte_limit;
 };
 
 CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create(
   uintnat capacity, uintnat reduction_budget);
+CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
+  uintnat capacity, uintnat reduction_budget,
+  mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words,
+  mlsize_t message_quota_words, uintnat mailbox_message_limit,
+  uintnat mailbox_byte_limit);
 CAMLextern void caml_actor_scheduler_destroy(
   struct caml_actor_scheduler *scheduler);
 
@@ -156,9 +172,23 @@ caml_actor_scheduler_prepare_root_closure(
   struct caml_actor_scheduler *scheduler, value closure,
   mlsize_t heap_quota_words, struct caml_actor_prepared_spawn **prepared);
 CAMLextern enum caml_actor_spawn_status
+caml_actor_scheduler_prepare_root_closure_sized(
+  struct caml_actor_scheduler *scheduler, value closure,
+  mlsize_t initial_heap_words, mlsize_t maximum_heap_words,
+  struct caml_actor_prepared_spawn **prepared);
+CAMLextern enum caml_actor_spawn_status
 caml_actor_scheduler_prepare_closure(
   struct caml_actor_scheduler *scheduler, value closure,
   mlsize_t heap_quota_words, struct caml_actor_prepared_spawn **prepared);
+CAMLextern enum caml_actor_spawn_status
+caml_actor_scheduler_prepare_closure_sized(
+  struct caml_actor_scheduler *scheduler, value closure,
+  mlsize_t initial_heap_words, mlsize_t maximum_heap_words,
+  struct caml_actor_prepared_spawn **prepared);
+CAMLextern enum caml_actor_spawn_status
+caml_actor_scheduler_prepare_closure_default(
+  struct caml_actor_scheduler *scheduler, value closure,
+  struct caml_actor_prepared_spawn **prepared);
 CAMLextern uintnat caml_actor_scheduler_prepared_pid(
   const struct caml_actor_prepared_spawn *prepared);
 CAMLextern int caml_actor_scheduler_commit_prepared(
@@ -170,6 +200,10 @@ CAMLextern void caml_actor_scheduler_abort_prepared(
    but is not linked into the destination mailbox until commit. */
 CAMLextern enum caml_actor_send_status caml_actor_scheduler_can_send(
   struct caml_actor_scheduler *scheduler, uintnat pid);
+CAMLextern int caml_actor_scheduler_message_quota_words(
+  struct caml_actor_scheduler *scheduler, mlsize_t *quota_words);
+CAMLextern int caml_actor_scheduler_record_mailbox_quota_failure(
+  struct caml_actor_scheduler *scheduler);
 CAMLextern enum caml_actor_send_status caml_actor_scheduler_prepare_send(
   struct caml_actor_scheduler *scheduler, uintnat pid,
   struct caml_actor_envelope *envelope,

@@ -26,6 +26,26 @@ module Actor : sig
   type 'message pid
   type 'message inbox
 
+  type heap_limits = {
+    initial_words : int;
+    maximum_words : int;
+  }
+
+  val default_root_heap_limits : heap_limits
+  val default_child_heap_limits : heap_limits
+
+  type world_config = {
+    root_heap : heap_limits;
+    child_heap : heap_limits;
+    max_actors : int;
+    reductions_per_slice : int;
+    max_message_words : int;
+    max_mailbox_messages : int;
+    max_mailbox_bytes : int;
+  }
+
+  val default_world_config : world_config
+
   type run_error =
     | Unsupported_runtime
     | Root_failed of string
@@ -55,11 +75,28 @@ module Actor : sig
     messages_received : int;
     messages_dropped : int;
     mailbox_messages : int;
+    mailbox_bytes : int;
+    mailbox_quota_failures : int;
+    current_heap_words : int;
+    maximum_heap_words : int;
+    heap_growths : int;
+    actor_capacity : int;
+    reduction_budget : int;
+    message_word_limit : int;
+    mailbox_message_limit : int;
+    mailbox_byte_limit : int;
   }
 
   val run : (unit inbox -> unit) -> (unit, run_error) result
+  val run_with_heap_limits :
+    root:heap_limits -> child:heap_limits ->
+    (unit inbox -> unit) -> (unit, run_error) result
+  val run_with_config : world_config ->
+    (unit inbox -> unit) -> (unit, run_error) result
   val spawn : ('message inbox -> unit) ->
     ('message pid, spawn_error) result
+  val spawn_with_heap_limits : heap_limits ->
+    ('message inbox -> unit) -> ('message pid, spawn_error) result
   val self : 'message inbox -> 'message pid
   val send : 'message pid -> 'message -> (unit, send_error) result
   val receive : 'message inbox -> 'message
@@ -76,7 +113,40 @@ never escape through an error.
 `stats` is available only inside the actor world. Its lifetime counters
 saturate at `max_int`; `runnable_actors` includes the actor taking the
 snapshot, and `messages_dropped` counts unread envelopes discarded at actor
-retirement.
+retirement. Mailbox gauges and immutable world limits are scheduler-owned.
+Heap capacity, maximum, and growth describe only the actor taking the
+snapshot; `stats` never inspects a foreign actor heap.
+
+Layer 11 adds elastic private heaps without changing the behavior of `run` or
+`spawn`: their default initial and maximum sizes remain equal. A configured
+heap reserves a guarded maximum address range, commits only its current pages,
+collects before growing, and doubles logical capacity only when live data plus
+the requested allocation still does not fit. A root or child entry graph may
+raise the actual starting capacity above the requested initial size, but never
+above the configured maximum.
+
+`run_with_heap_limits` validates both limit pairs before freezing the actor
+world. `spawn_with_heap_limits` returns `Initial_heap_limit` for an invalid
+pair or for a per-spawn maximum above the world's configured child maximum.
+Both entry points reuse the established `caml_actor_run/1` and
+`caml_actor_spawn/1` primitive names so the boot runtime can still load the
+rebuilt standard library and compiler.
+
+`run_with_config` also validates the finite actor count, positive reduction
+budget, and positive per-send message graph limit before freezing. The
+defaults remain 1,024 actors including the root, 1,000 reductions per slice,
+and 65,536 graph words per send. The scheduler owns this immutable
+configuration. Message encoding obtains its quota only through the active
+scheduler context, then discovers and validates the complete graph before
+publishing any pointer-free envelope.
+
+The default aggregate mailbox limits are 65,536 queued messages and
+268,435,456 encoded bytes. The canonical byte charge is one root-token word
+plus the unique graph words in the envelope; aliases and cycles are charged
+once. Both limits are checked before send preparation and again at commit.
+Quota rejection links no envelope, changes no mailbox gauge, and does not wake
+a blocked receiver. Receiving or retiring an actor releases the corresponding
+message and byte charges.
 
 ## Execution semantics
 

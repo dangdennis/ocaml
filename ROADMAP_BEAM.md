@@ -56,6 +56,7 @@ part of the current roadmap.
 | Layer 8: compatibility and observability baseline | `actor-real/08-contract-observability-baseline`, PR #11 | Published draft |
 | Layer 9: frozen global reads | `actor-real/09-frozen-global-reads`, PR #12 | Published draft and Layer 10 base |
 | Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | Complete and published as a stacked draft |
+| Layer 11: elastic heaps and configurable limits | `actor-real/11-elastic-heaps`, PR #14 | Complete and published as a stacked draft |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -204,6 +205,73 @@ per-actor limit. Add explicit world and spawn configuration for:
 Allocation failure must remain actor-local and deterministic. Heap growth must
 not introduce shared ownership or allow a collection to inspect another
 actor's heap.
+
+### Design boundary
+
+Each actor reserves a guarded address range for its maximum heap, but commits
+only the pages needed by its current logical capacity. Allocation pressure
+first runs an ordinary copying collection. The heap grows geometrically only
+when the surviving graph plus the requested block still does not fit. Growth
+commits both semispaces and replaces collector metadata before any root is
+rewritten; a preparation failure therefore leaves the current heap usable.
+
+The existing internal heap constructor remains a fixed-size compatibility
+wrapper with `initial = maximum`. Public actors do not use elastic defaults
+until the configuration API and spawn-copy path are wired and tested.
+
+### Work sequence
+
+1. Separate current capacity from the lifetime maximum in the actor heap.
+2. Thread initial and maximum heap sizes through root and child preparation.
+3. Add validated public world and spawn configuration without changing the
+   behavior of `Actor.run` or `Actor.spawn` defaults.
+4. Move actor count, reductions, and message graph limits out of hard-coded
+   runtime constants and into the world configuration.
+5. Add transactional mailbox message and byte quotas with observable counters.
+6. Re-run the full Layer 10 compatibility, sanitizer, benchmark, and package
+   gates before publishing the completed layer.
+
+### Milestone tracker
+
+- [x] Add red seam coverage for initial capacity, collection-before-growth,
+      live-root relocation, geometric growth, compatibility construction, and
+      deterministic maximum exhaustion.
+- [x] Reserve the maximum guarded range while committing and allocating
+      metadata only for the current capacity.
+- [x] Grow collector metadata and both semispaces transactionally before root
+      rewriting.
+- [x] Pass the normal, debug, and instrumented actor suites for the internal
+      heap slice: 23 passed and one expected platform skip in each runtime.
+- [x] Thread separate initial and maximum sizes through root closure copying,
+      child closure copying, and scheduler slot preparation.
+- [x] Add public validated world heap configuration and preserve existing
+      fixed-size defaults.
+- [x] Add per-spawn heap overrides bounded by the configured child maximum.
+- [x] Configure actor count, reductions, and message graph/serialization work
+      with validated finite defaults owned by the actor world.
+- [x] Enforce mailbox message and byte quotas transactionally.
+- [x] Expose current capacity, maximums, growth, and quota failures through
+      deterministic observability.
+- [x] Pass the full local, sanitizer, package, benchmark, hygiene, and fresh
+      runner gates and publish the stacked Layer 11 draft.
+
+### Validation checkpoint
+
+Layer 11 closed at implementation tip `a5194fbf32`. The local normal, debug,
+and instrumented actor suites each passed 24 tests with one expected platform
+skip. The tooling suites, benchmark smoke, pinned Astring package canary, and
+relevant callback, backtrace, and effects bytecode suites passed. Fresh-runner
+Actor Runtime (`33761176724`), Hygiene (`33761176638`), full Build
+(`33761176621`), and MSVC (`33761176729`) workflows passed at that exact tip:
+35 checks passed and eight platform- or event-specific checks skipped as
+expected.
+
+### Current next action
+
+Begin Layer 12 with red tests for pointer-free structured exit reasons and
+monitor identity. Preserve Layer 11's actor-owned heaps, receiver-owned
+mailbox copies, transactional quotas, stale-PID ordering, and fail-closed
+primitive and statistics ownership checks.
 
 ## Layer 12: structured exits and monitors
 

@@ -55,6 +55,9 @@ struct caml_actor_copy_result {
    no partially built heap remains registered. */
 CAMLextern struct caml_actor_copy_result caml_actor_copy_closure(
   value source, uintnat owner, mlsize_t quota_words);
+CAMLextern struct caml_actor_copy_result caml_actor_copy_closure_sized(
+  value source, uintnat owner, mlsize_t initial_words,
+  mlsize_t maximum_words);
 
 /* A stable, pointer-free diagnostic suitable for mapping to the public
    Unsupported_capture payload after the actor world has been torn down. */
