@@ -449,10 +449,9 @@ before changing host state. The snapshot is revalidated while actor mode is
 active and before thaw completes. This supports ordinary read-only module
 lookups; it does not make shared mutable module state actor-local.
 
-The mailbox boundary is narrower. A non-immediate message graph must be owned
-by the sending actor, so a string or data graph read directly from frozen
-globals is rejected as `Unsupported_message` and no envelope is published.
-Copying supported frozen graphs into messages is deferred to a later layer.
+Layer 9 kept the mailbox boundary narrower: non-immediate message graphs had to
+be owned by the sending actor. Layer 10 replaces that historical restriction
+with the bounded copy contract described below.
 
 `ocamlactorcheck` is a first-pass advisory inventory for compiler-produced
 bytecode. It lists global-read and `SETGLOBAL` instructions and `C_CALL*` sites,
@@ -461,6 +460,31 @@ primitive capabilities unclassified and does not perform control-flow or
 reachability analysis, validate branch targets or frozen graphs, enumerate
 every mutation opcode, or certify runtime compatibility. Runtime checks remain
 authoritative.
+
+## Layer 10 primitive capabilities and frozen mailbox copies
+
+Layer 10 generates the runtime fence and `ocamlactorcheck` classifications from
+`runtime/actor_primitive_policy.def`. Unknown names, mismatched arities, and
+explicitly forbidden primitives fail closed. Corpus-driven audits currently
+admit actor-aware arrays, strings and bytes, structural hashing and comparison,
+integer parsing and formatting, and a bounded float slice. Allocation is
+actor-local; mutation requires an actor-owned destination; supported reads use
+only exact actor-owned values or the validated frozen snapshot.
+
+Mailbox encoding may now traverse the current actor heap and approved frozen
+snapshot together. Both origins use one identity map, so mixed graphs preserve
+aliases and cycles. The wire envelope contains neither OCaml pointers nor an
+origin bit, and decoding always allocates a fresh receiver-owned graph. This
+means a receiver may mutate its private copy of an array while the frozen source
+remains unchanged. Closures, custom blocks, resources, finalizable values, and
+unsupported layouts are still rejected before an envelope is published.
+
+The package canary builds upstream Astring 0.8.5 from a SHA-256-pinned release
+archive and runs a small line-protocol service across two actors. It uses
+`Hashtbl.create ~random:false`: the default form reads Stdlib's process-global
+atomic randomization flag and remains deliberately unsupported. Atomic mutation
+and other process-global coordination have no actor-ownership contract in this
+layer.
 
 ## Isolation invariants
 

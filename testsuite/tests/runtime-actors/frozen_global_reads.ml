@@ -20,14 +20,19 @@ let child_reads_globals root inbox =
   assert (graph.left == graph.right);
   assert (graph.loop.next == graph.loop);
   begin match Actor.receive inbox with
+  | Frozen_graph copied ->
+      assert (copied.left == copied.right);
+      assert (copied.left != graph.left);
+      assert (copied.loop.next == copied.loop)
+  | Continue -> assert false
+  end;
+  begin match Actor.receive inbox with
   | Continue ->
       begin match Actor.send root () with
       | Ok () -> ()
       | Error _ -> assert false
       end
-  | Frozen_graph _ ->
-      (* A failed frozen-value send must not publish a partial envelope. *)
-      assert false
+  | Frozen_graph _ -> assert false
   end
 
 let exercise_child_and_frozen_send root_inbox =
@@ -35,13 +40,12 @@ let exercise_child_and_frozen_send root_inbox =
   match Actor.spawn (child_reads_globals root) with
   | Error _ -> assert false
   | Ok child ->
-      (* Layer 9 deliberately keeps messages actor-owned.  A frozen global
-         graph is rejected transactionally; the following supported message
-         must remain the first mailbox entry observed by the child. *)
+      (* Layer 10 copies the frozen snapshot into the pointer-free envelope.
+         The frozen graph and following local constructor retain FIFO order. *)
       begin match Actor.send child
         (Frozen_graph Frozen_global_helper.immutable_graph) with
-      | Error (Actor.Unsupported_message _) -> ()
-      | _ -> assert false
+      | Ok () -> ()
+      | Error _ -> assert false
       end;
       begin match Actor.send child Continue with
       | Ok () -> ()
