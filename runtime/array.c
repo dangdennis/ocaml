@@ -19,6 +19,7 @@
 #include <string.h>
 #include "caml/actor_heap.h"
 #include "caml/actor_scheduler.h"
+#include "caml/actor_world.h"
 #include "caml/alloc.h"
 #include "caml/fail.h"
 #include "caml/memory.h"
@@ -29,7 +30,8 @@
 
 static const mlsize_t mlsize_t_max = CAML_UINTNAT_MAX;
 
-static int caml_actor_array_info(value array, mlsize_t *length, tag_t *tag)
+static int caml_actor_array_info(
+  value array, int writable, mlsize_t *length, tag_t *tag)
 {
   struct caml_actor_heap *heap = caml_actor_heap_current();
 
@@ -38,7 +40,11 @@ static int caml_actor_array_info(value array, mlsize_t *length, tag_t *tag)
     *tag = 0;
     return 1;
   }
-  if (heap == NULL || !caml_actor_heap_owns_value(heap, array)) return 0;
+  if (heap == NULL
+      || (!caml_actor_heap_owns_value(heap, array)
+          && (writable || !caml_actor_world_value_is_frozen(array)))) {
+    return 0;
+  }
   *tag = Tag_val(array);
   if (*tag != 0 && *tag != Double_array_tag) return 0;
 #ifdef FLAT_FLOAT_ARRAY
@@ -50,11 +56,12 @@ static int caml_actor_array_info(value array, mlsize_t *length, tag_t *tag)
   return 1;
 }
 
-static int caml_actor_array_range(value array, intnat offset, intnat length,
-                                  mlsize_t *array_length, tag_t *tag)
+static int caml_actor_array_range(
+  value array, int writable, intnat offset, intnat length,
+  mlsize_t *array_length, tag_t *tag)
 {
   return offset >= 0 && length >= 0
-    && caml_actor_array_info(array, array_length, tag)
+    && caml_actor_array_info(array, writable, array_length, tag)
     && (uintnat)offset <= *array_length
     && (uintnat)length <= *array_length - (uintnat)offset;
 }
@@ -105,7 +112,7 @@ CAMLprim value caml_array_get_addr(value array, value index)
     mlsize_t length;
     tag_t tag;
 
-    if (idx < 0 || !caml_actor_array_info(array, &length, &tag)
+    if (idx < 0 || !caml_actor_array_info(array, 0, &length, &tag)
         || tag != 0 || (uintnat)idx >= length
         || !caml_actor_heap_read_field(array, (mlsize_t)idx, &result)) {
       caml_array_bound_error();
@@ -123,6 +130,21 @@ CAMLprim value caml_floatarray_get(value array, value index)
   double d;
   value res;
 
+  if (caml_actor_heap_current() != NULL) {
+    struct caml_actor_heap *heap = caml_actor_heap_current();
+    mlsize_t length;
+    tag_t tag;
+
+    if (idx < 0 || !caml_actor_array_info(array, 0, &length, &tag)
+        || tag != Double_array_tag || (uintnat)idx >= length) {
+      caml_array_bound_error();
+    }
+    d = Double_flat_field(array, idx);
+    res = caml_actor_array_alloc(heap, Double_wosize, Double_tag);
+    if (res == 0) return Atom(0);
+    Store_double_val(res, d);
+    return res;
+  }
   CAMLassert (Wosize_val(array) == 0 || Tag_val(array) == Double_array_tag);
   if (idx < 0 || idx >= Wosize_val(array) / Double_wosize)
     caml_array_bound_error();
@@ -136,6 +158,17 @@ CAMLprim value caml_floatarray_get(value array, value index)
 CAMLprim value caml_array_get(value array, value index)
 {
 #ifdef FLAT_FLOAT_ARRAY
+  if (caml_actor_heap_current() != NULL) {
+    mlsize_t length;
+    tag_t tag;
+
+    if (!caml_actor_array_info(array, 0, &length, &tag)) {
+      caml_array_bound_error();
+    }
+    (void)length;
+    if (tag == Double_array_tag) return caml_floatarray_get(array, index);
+    return caml_array_get_addr(array, index);
+  }
   if (Tag_val(array) == Double_array_tag)
     return caml_floatarray_get(array, index);
 #else
@@ -152,7 +185,7 @@ CAMLprim value caml_array_set_addr(value array, value index, value newval)
     mlsize_t length;
     tag_t tag;
 
-    if (!caml_actor_array_info(array, &length, &tag) || tag != 0) {
+    if (!caml_actor_array_info(array, 1, &length, &tag) || tag != 0) {
       caml_invalid_argument("Array.set: array is not actor-owned");
     }
     if (idx < 0 || (uintnat)idx >= length) caml_array_bound_error();
@@ -170,7 +203,19 @@ CAMLprim value caml_array_set_addr(value array, value index, value newval)
 CAMLprim value caml_floatarray_set(value array, value index, value newval)
 {
   intnat idx = Long_val(index);
-  double d = Double_val (newval);
+  double d;
+  if (caml_actor_heap_current() != NULL) {
+    mlsize_t length;
+    tag_t tag;
+
+    if (!caml_actor_array_info(array, 1, &length, &tag)
+        || tag != Double_array_tag || idx < 0 || (uintnat)idx >= length
+        || !Is_block(newval) || Tag_val(newval) != Double_tag
+        || !caml_actor_heap_value_is_storable(newval)) {
+      caml_invalid_argument("Array.set: unsupported actor float array");
+    }
+  }
+  d = Double_val (newval);
   CAMLassert (Wosize_val(array) == 0 || Tag_val(array) == Double_array_tag);
   if (idx < 0 || idx >= Wosize_val(array) / Double_wosize)
     caml_array_bound_error();
@@ -182,6 +227,19 @@ CAMLprim value caml_floatarray_set(value array, value index, value newval)
 CAMLprim value caml_array_set(value array, value index, value newval)
 {
 #ifdef FLAT_FLOAT_ARRAY
+  if (caml_actor_heap_current() != NULL) {
+    mlsize_t length;
+    tag_t tag;
+
+    if (!caml_actor_array_info(array, 1, &length, &tag)) {
+      caml_invalid_argument("Array.set: array is not actor-owned");
+    }
+    (void)length;
+    if (tag == Double_array_tag) {
+      return caml_floatarray_set(array, index, newval);
+    }
+    return caml_array_set_addr(array, index, newval);
+  }
   if (Tag_val(array) == Double_array_tag)
     return caml_floatarray_set(array, index, newval);
 #else
@@ -197,6 +255,9 @@ CAMLprim value caml_floatarray_unsafe_get(value array, value index)
   double d;
   value res;
 
+  if (caml_actor_heap_current() != NULL) {
+    return caml_floatarray_get(array, index);
+  }
   CAMLassert (Wosize_val(array) == 0 || Tag_val(array) == Double_array_tag);
   d = Double_flat_field(array, idx);
   Alloc_small(res, Double_wosize, Double_tag, Alloc_small_enter_GC);
@@ -208,7 +269,7 @@ CAMLprim value caml_floatarray_unsafe_get(value array, value index)
 CAMLprim value caml_array_unsafe_get(value array, value index)
 {
   if (caml_actor_heap_current() != NULL) {
-    return caml_array_get_addr(array, index);
+    return caml_array_get(array, index);
   }
 #ifdef FLAT_FLOAT_ARRAY
   if (Tag_val(array) == Double_array_tag)
@@ -234,6 +295,9 @@ static value caml_array_unsafe_set_addr(value array, value index,value newval)
    [Store_double_flat_field]. */
 CAMLprim value caml_floatarray_unsafe_set(value array, value index,value newval)
 {
+  if (caml_actor_heap_current() != NULL) {
+    return caml_floatarray_set(array, index, newval);
+  }
   intnat idx = Long_val(index);
   double d = Double_val (newval);
   CAMLassert (Wosize_val(array) == 0 || Tag_val(array) == Double_array_tag);
@@ -245,7 +309,7 @@ CAMLprim value caml_floatarray_unsafe_set(value array, value index,value newval)
 CAMLprim value caml_array_unsafe_set(value array, value index, value newval)
 {
   if (caml_actor_heap_current() != NULL) {
-    return caml_array_set_addr(array, index, newval);
+    return caml_array_set(array, index, newval);
   }
 #ifdef FLAT_FLOAT_ARRAY
   if (Tag_val(array) == Double_array_tag)
@@ -583,9 +647,9 @@ static value caml_actor_array_blit(value source, value source_offset,
   tag_t destination_tag;
 
   if (!caml_actor_array_range(
-        source, source_start, count, &source_length, &source_tag)
+        source, 0, source_start, count, &source_length, &source_tag)
       || !caml_actor_array_range(
-        destination, destination_start, count,
+        destination, 1, destination_start, count,
         &destination_length, &destination_tag)
       || source_tag != destination_tag) {
     caml_invalid_argument("Array.blit: unsupported actor array");
@@ -947,7 +1011,7 @@ static value caml_actor_array_fill(value array, value v_ofs, value v_len,
   tag_t tag;
 
   if (!caml_actor_array_range(
-        array, offset, length, &array_length, &tag)) {
+        array, 1, offset, length, &array_length, &tag)) {
     caml_invalid_argument("Array.fill: unsupported actor array");
   }
   if (!caml_actor_heap_value_is_storable(new_value)) {

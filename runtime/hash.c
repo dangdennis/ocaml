@@ -20,6 +20,9 @@
 /* The interface of this file is in "mlvalues.h" (for [caml_hash_variant])
    and in "hash.h" (for the other exported functions). */
 
+#include "caml/actor_heap.h"
+#include "caml/actor_scheduler.h"
+#include "caml/actor_world.h"
 #include "caml/mlvalues.h"
 #include "caml/custom.h"
 #include "caml/memory.h"
@@ -179,6 +182,30 @@ CAMLexport uint32_t caml_hash_mix_string(uint32_t h, value s)
 /* Maximal number of Forward_tag links followed in one step */
 #define MAX_FORWARD_DEREFERENCE 1000
 
+static int caml_actor_hash_value_readable(value candidate)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  tag_t tag;
+  uintnat atom_tag;
+
+  if (heap == NULL || Is_long(candidate)) return 1;
+  for (atom_tag = 0; atom_tag < Num_tags; atom_tag++) {
+    if (candidate == Atom((tag_t)atom_tag)) return 1;
+  }
+  if ((!caml_actor_heap_owns_value(heap, candidate)
+       && !caml_actor_world_value_is_frozen(candidate))) {
+    caml_actor_scheduler_request_unsupported();
+    return 0;
+  }
+  tag = Tag_val(candidate);
+  if (tag < Forcing_tag || tag == String_tag || tag == Double_tag
+      || tag == Double_array_tag) {
+    return 1;
+  }
+  caml_actor_scheduler_request_unsupported();
+  return 0;
+}
+
 /* The generic hash function */
 
 CAMLprim value caml_hash(value count, value limit, value seed, value obj)
@@ -205,6 +232,7 @@ CAMLprim value caml_hash(value count, value limit, value seed, value obj)
       h = caml_hash_mix_intnat(h, v);
       num--;
     } else {
+      if (!caml_actor_hash_value_readable(v)) return Val_int(0);
       switch (Tag_val(v)) {
       case String_tag:
         h = caml_hash_mix_string(h, v);

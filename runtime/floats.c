@@ -31,6 +31,9 @@
 #include <limits.h>
 #include <assert.h>
 
+#include "caml/actor_heap.h"
+#include "caml/actor_scheduler.h"
+#include "caml/actor_world.h"
 #include "caml/alloc.h"
 #include "caml/fail.h"
 #include "caml/memory.h"
@@ -150,12 +153,70 @@ void caml_free_locale(void)
 #endif
 }
 
+static int caml_actor_float_readable(value number)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+
+  if (heap == NULL) return 1;
+  if (Is_block(number) && number != 0 && Tag_val(number) == Double_tag
+      && (caml_actor_heap_owns_value(heap, number)
+          || caml_actor_world_value_is_frozen(number))) {
+    return 1;
+  }
+  caml_actor_scheduler_request_unsupported();
+  return 0;
+}
+
+static value caml_actor_copy_c_string(const char *text, mlsize_t length)
+{
+  value result;
+
+  if (caml_actor_heap_current() == NULL) {
+    return caml_alloc_initialized_string(length, text);
+  }
+  result = caml_actor_alloc_string(length);
+  if (result == 0) return Atom(0);
+  memcpy((char *)String_val(result), text, length);
+  return result;
+}
+
+static value caml_actor_format_double(const char *format, double number)
+{
+  char buffer[128];
+  int length = snprintf(buffer, sizeof(buffer), format, number);
+  value result;
+
+  if (length < 0) caml_raise_out_of_memory();
+  if ((size_t)length < sizeof(buffer)) {
+    return caml_actor_copy_c_string(buffer, (mlsize_t)length);
+  }
+  result = caml_actor_alloc_string((mlsize_t)length);
+  if (result == 0) return Atom(0);
+  snprintf((char *)String_val(result), (size_t)length + 1, format, number);
+  return result;
+}
+
 CAMLexport value caml_copy_double(double d)
 {
   Caml_check_caml_state();
   value res;
 
-  Alloc_small(res, Double_wosize, Double_tag, Alloc_small_enter_GC);
+  if (caml_actor_heap_current() != NULL) {
+    enum caml_actor_heap_alloc_error error;
+
+    res = caml_actor_heap_try_alloc(
+      caml_actor_heap_current(), Double_wosize, Double_tag, 0, &error);
+    if (res == 0) {
+      if (error == CAML_ACTOR_HEAP_ALLOC_QUOTA) {
+        caml_actor_scheduler_request_heap_exhausted();
+      } else {
+        caml_actor_scheduler_request_unsupported();
+      }
+      return Atom(0);
+    }
+  } else {
+    Alloc_small(res, Double_wosize, Double_tag, Alloc_small_enter_GC);
+  }
   Store_double_val(res, d);
   return res;
 }
@@ -175,23 +236,36 @@ CAMLexport void caml_Store_double_array_field(value val, mlsize_t i, double dbl)
 CAMLprim value caml_format_float(value fmt, value arg)
 {
   value res;
-  double d = Double_val(arg);
+  double d;
+
+  if (!caml_actor_float_readable(arg)) return Atom(0);
+  if (caml_actor_heap_current() != NULL
+      && (!caml_actor_world_value_is_frozen(fmt)
+          || Tag_val(fmt) != String_tag)) {
+    caml_actor_scheduler_request_unsupported();
+    return Atom(0);
+  }
+  d = Double_val(arg);
 
 #ifdef HAS_BROKEN_PRINTF
   if (isfinite(d)) {
 #endif
     USE_LOCALE;
-    res = caml_alloc_sprintf(String_val(fmt), d);
+    if (caml_actor_heap_current() != NULL) {
+      res = caml_actor_format_double(String_val(fmt), d);
+    } else {
+      res = caml_alloc_sprintf(String_val(fmt), d);
+    }
     RESTORE_LOCALE;
 #ifdef HAS_BROKEN_PRINTF
   } else {
     if (isnan(d)) {
-      res = caml_copy_string("nan");
+      res = caml_actor_copy_c_string("nan", 3);
     } else {
       if (d > 0)
-        res = caml_copy_string("inf");
+        res = caml_actor_copy_c_string("inf", 3);
       else
-        res = caml_copy_string("-inf");
+        res = caml_actor_copy_c_string("-inf", 4);
     }
   }
 #endif
@@ -442,6 +516,8 @@ CAMLprim value caml_abs_float(value f)
 
 CAMLprim value caml_add_float(value f, value g)
 {
+  if (!caml_actor_float_readable(f)
+      || !caml_actor_float_readable(g)) return Atom(0);
   return caml_copy_double(Double_val(f) + Double_val(g));
 }
 
@@ -1116,6 +1192,8 @@ intnat caml_float_compare_unboxed(double f, double g)
 }
 
 #define FLOAT_CMP(op, f, g) \
+  if (!caml_actor_float_readable(f) \
+      || !caml_actor_float_readable(g)) return Val_false; \
   return Val_bool(Double_val(f) op Double_val(g));
 
 CAMLprim value caml_neq_float(value f, value g) { FLOAT_CMP(!=, f, g) }
@@ -1127,6 +1205,8 @@ CAMLprim value caml_gt_float(value f, value g) { FLOAT_CMP(>, f, g) }
 
 CAMLprim value caml_float_compare(value vf, value vg)
 {
+  if (!caml_actor_float_readable(vf)
+      || !caml_actor_float_readable(vg)) return Val_int(0);
   return Val_int(caml_float_compare_unboxed(Double_val(vf),Double_val(vg)));
 }
 
