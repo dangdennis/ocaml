@@ -73,14 +73,16 @@ let operations_root _inbox =
   Array.unsafe_set destination 4 12;
   assert (Array.unsafe_get destination 4 = 12)
 
-let frozen_root _inbox =
+let frozen_set_root _inbox =
   let set_frozen_rejected =
     try
       frozen_destination.(0) <- 0;
       false
     with Invalid_argument _ -> true
   in
-  assert set_frozen_rejected;
+  assert set_frozen_rejected
+
+let frozen_fill_root _inbox =
   let fill_frozen_rejected =
     try
       Array.fill frozen_destination 0 2 0;
@@ -101,7 +103,8 @@ let stdlib_root _inbox =
 let () =
   require_ok "construction" (Actor.run construction_root);
   require_ok "operations" (Actor.run operations_root);
-  require_ok "frozen rejection" (Actor.run frozen_root);
+  require_ok "frozen set rejection" (Actor.run frozen_set_root);
+  require_ok "frozen fill rejection" (Actor.run frozen_fill_root);
   require_ok "stdlib and GC" (Actor.run stdlib_root);
   assert (frozen_destination.(0) = 41);
   assert (frozen_destination.(1) = 42);
