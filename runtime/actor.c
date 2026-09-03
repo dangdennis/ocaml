@@ -551,7 +551,7 @@ CAMLprim value caml_actor_stats(value unit)
   if (!caml_actor_scheduler_stats(Caml_state->actor_scheduler, &stats)) {
     caml_invalid_argument("Actor.stats outside an actor world");
   }
-  record = actor_try_alloc(12, 0);
+  record = actor_try_alloc(22, 0);
   if (record == 0) return Val_unit;
 #define Store_stat(field, value) \
   Field(record, (field)) = Val_long( \
@@ -568,6 +568,16 @@ CAMLprim value caml_actor_stats(value unit)
   Store_stat(9, stats.messages_received);
   Store_stat(10, stats.messages_dropped);
   Store_stat(11, stats.mailbox_messages);
+  Store_stat(12, stats.mailbox_bytes);
+  Store_stat(13, stats.mailbox_quota_failures);
+  Store_stat(14, stats.current_heap_words);
+  Store_stat(15, stats.maximum_heap_words);
+  Store_stat(16, stats.heap_growths);
+  Store_stat(17, stats.actor_capacity);
+  Store_stat(18, stats.reduction_budget);
+  Store_stat(19, stats.message_word_limit);
+  Store_stat(20, stats.mailbox_message_limit);
+  Store_stat(21, stats.mailbox_byte_limit);
 #undef Store_stat
   return record;
 #else

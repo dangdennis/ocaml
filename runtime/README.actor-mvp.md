@@ -75,6 +75,16 @@ module Actor : sig
     messages_received : int;
     messages_dropped : int;
     mailbox_messages : int;
+    mailbox_bytes : int;
+    mailbox_quota_failures : int;
+    current_heap_words : int;
+    maximum_heap_words : int;
+    heap_growths : int;
+    actor_capacity : int;
+    reduction_budget : int;
+    message_word_limit : int;
+    mailbox_message_limit : int;
+    mailbox_byte_limit : int;
   }
 
   val run : (unit inbox -> unit) -> (unit, run_error) result
@@ -103,7 +113,9 @@ never escape through an error.
 `stats` is available only inside the actor world. Its lifetime counters
 saturate at `max_int`; `runnable_actors` includes the actor taking the
 snapshot, and `messages_dropped` counts unread envelopes discarded at actor
-retirement.
+retirement. Mailbox gauges and immutable world limits are scheduler-owned.
+Heap capacity, maximum, and growth describe only the actor taking the
+snapshot; `stats` never inspects a foreign actor heap.
 
 Layer 11 adds elastic private heaps without changing the behavior of `run` or
 `spawn`: their default initial and maximum sizes remain equal. A configured

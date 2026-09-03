@@ -84,11 +84,25 @@ type stats = {
   messages_received : int;
   messages_dropped : int;
   mailbox_messages : int;
+  mailbox_bytes : int;
+  mailbox_quota_failures : int;
+  current_heap_words : int;
+  maximum_heap_words : int;
+  heap_growths : int;
+  actor_capacity : int;
+  reduction_budget : int;
+  message_word_limit : int;
+  mailbox_message_limit : int;
+  mailbox_byte_limit : int;
 }
 (** A deterministic snapshot of the current actor world's scheduler counts.
     [runnable_actors] includes the actor taking the snapshot.
     [messages_dropped] counts queued messages discarded when an actor retires.
-    Counters saturate at [max_int]. *)
+    [mailbox_bytes] is the current aggregate encoded-byte charge and
+    [mailbox_quota_failures] counts rejected graph, message-count, and byte
+    quota attempts. Heap fields describe only the actor taking the snapshot;
+    the remaining limit fields describe its immutable actor world. Counters
+    saturate at [max_int]. *)
 
 external run : (unit inbox -> unit) -> (unit, run_error) result
   = "caml_actor_run"

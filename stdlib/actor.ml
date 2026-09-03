@@ -79,6 +79,16 @@ type stats = {
   messages_received : int;
   messages_dropped : int;
   mailbox_messages : int;
+  mailbox_bytes : int;
+  mailbox_quota_failures : int;
+  current_heap_words : int;
+  maximum_heap_words : int;
+  heap_growths : int;
+  actor_capacity : int;
+  reduction_budget : int;
+  message_word_limit : int;
+  mailbox_message_limit : int;
+  mailbox_byte_limit : int;
 }
 
 type run_request =
