@@ -1,4 +1,5 @@
 (* TEST
+ modules = "primitive_array_frozen_helper.ml";
  {
    linux;
    arch_amd64;
@@ -26,8 +27,6 @@ let require_ok stage = function
   | Error Actor.Root_heap_exhausted -> failwith (stage ^ ": root heap exhausted")
   | Error Actor.Deadlock -> failwith (stage ^ ": deadlock")
   | Error (Actor.Root_failed message) -> failwith (stage ^ ": " ^ message)
-
-let frozen_destination = [| 41; 42; 43 |]
 
 let expect_rejected stage root unchanged =
   match Actor.run root with
@@ -82,10 +81,10 @@ let operations_root _inbox =
   assert (Array.unsafe_get destination 4 = 12)
 
 let frozen_set_root _inbox =
-  frozen_destination.(0) <- 0
+  Primitive_array_frozen_helper.set ()
 
 let frozen_fill_root _inbox =
-  Array.fill frozen_destination 0 2 0
+  Primitive_array_frozen_helper.fill ()
 
 let stdlib_root _inbox =
   let table = Hashtbl.create ~random:false 31 in
@@ -100,13 +99,11 @@ let () =
   require_ok "construction" (Actor.run construction_root);
   require_ok "operations" (Actor.run operations_root);
   expect_rejected "frozen set rejection" frozen_set_root
-    (fun () -> frozen_destination.(0) = 41);
+    Primitive_array_frozen_helper.unchanged;
   expect_rejected "frozen fill rejection" frozen_fill_root
-    (fun () -> frozen_destination.(0) = 41
-               && frozen_destination.(1) = 42);
+    Primitive_array_frozen_helper.unchanged;
   require_ok "stdlib and GC" (Actor.run stdlib_root);
-  assert (frozen_destination.(0) = 41);
-  assert (frozen_destination.(1) = 42);
+  assert (Primitive_array_frozen_helper.unchanged ());
   begin match Actor.run (fun _ -> ignore (Array.make 270_000 0)) with
   | Error Actor.Root_heap_exhausted -> ()
   | _ -> failwith "array allocation escaped the actor heap limit"
