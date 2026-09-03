@@ -134,6 +134,9 @@ struct caml_actor_scheduler_stats {
 
 CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create(
   uintnat capacity, uintnat reduction_budget);
+CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
+  uintnat capacity, uintnat reduction_budget,
+  mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words);
 CAMLextern void caml_actor_scheduler_destroy(
   struct caml_actor_scheduler *scheduler);
 
@@ -168,6 +171,10 @@ CAMLextern enum caml_actor_spawn_status
 caml_actor_scheduler_prepare_closure_sized(
   struct caml_actor_scheduler *scheduler, value closure,
   mlsize_t initial_heap_words, mlsize_t maximum_heap_words,
+  struct caml_actor_prepared_spawn **prepared);
+CAMLextern enum caml_actor_spawn_status
+caml_actor_scheduler_prepare_closure_default(
+  struct caml_actor_scheduler *scheduler, value closure,
   struct caml_actor_prepared_spawn **prepared);
 CAMLextern uintnat caml_actor_scheduler_prepared_pid(
   const struct caml_actor_prepared_spawn *prepared);

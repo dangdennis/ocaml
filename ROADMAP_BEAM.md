@@ -56,6 +56,7 @@ part of the current roadmap.
 | Layer 8: compatibility and observability baseline | `actor-real/08-contract-observability-baseline`, PR #11 | Published draft |
 | Layer 9: frozen global reads | `actor-real/09-frozen-global-reads`, PR #12 | Published draft and Layer 10 base |
 | Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | Complete and published as a stacked draft |
+| Layer 11: elastic heaps and configurable limits | `actor-real/11-elastic-heaps`, PR #14 | In progress; elastic heap and spawn-copy slices published |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -243,8 +244,9 @@ until the configuration API and spawn-copy path are wired and tested.
       heap slice: 23 passed and one expected platform skip in each runtime.
 - [x] Thread separate initial and maximum sizes through root closure copying,
       child closure copying, and scheduler slot preparation.
-- [ ] Add public validated world configuration and preserve existing defaults.
-- [ ] Add per-spawn heap overrides bounded by the world maximum.
+- [x] Add public validated world heap configuration and preserve existing
+      fixed-size defaults.
+- [x] Add per-spawn heap overrides bounded by the configured child maximum.
 - [ ] Configure actor count, reductions, and message graph/serialization work.
 - [ ] Enforce mailbox message and byte quotas transactionally.
 - [ ] Expose current capacity, maximums, growth, and quota failures through
@@ -254,9 +256,8 @@ until the configuration API and spawn-copy path are wired and tested.
 
 ### Current next action
 
-Write red public-API tests for distinct root and child initial and maximum heap
-sizes. Add validated configuration entry points without weakening the
-fixed-size `Actor.run` and `Actor.spawn` defaults.
+Move actor count, reduction budget, and message graph/serialization limits out
+of hard-coded runtime constants and into validated world configuration.
 
 ## Layer 12: structured exits and monitors
 
