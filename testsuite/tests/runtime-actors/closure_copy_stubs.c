@@ -49,6 +49,9 @@ CAMLprim value caml_actor_test_closure_copy(
   struct caml_actor_copy_result infix_copy = {
     CAML_ACTOR_COPY_INTERNAL, NULL, 0
   };
+  struct caml_actor_copy_result elastic_copy = {
+    CAML_ACTOR_COPY_INTERNAL, NULL, 0
+  };
   struct caml_actor_copy_result quota_copy;
   struct caml_actor_heap_verify_result verification;
   enum caml_actor_world_status world_status;
@@ -68,6 +71,14 @@ CAMLprim value caml_actor_test_closure_copy(
   quota_copy = caml_actor_copy_closure(entry, 0xC000, 1);
   REQUIRE(quota_copy.status == CAML_ACTOR_COPY_GRAPH_TOO_LARGE
           && quota_copy.heap == NULL && quota_copy.closure == 0, 2);
+
+  elastic_copy = caml_actor_copy_closure_sized(
+    entry, 0xC003, 1, 256);
+  REQUIRE(elastic_copy.status == CAML_ACTOR_COPY_OK
+          && elastic_copy.heap != NULL
+          && caml_actor_heap_capacity_words(elastic_copy.heap) > 1
+          && caml_actor_heap_capacity_words(elastic_copy.heap) <= 256
+          && caml_actor_heap_quota_words(elastic_copy.heap) == 256, 15);
 
   copied = caml_actor_copy_closure(entry, 0xC001, 256);
   REQUIRE(copied.status == CAML_ACTOR_COPY_OK
@@ -107,6 +118,7 @@ CAMLprim value caml_actor_test_closure_copy(
 cleanup:
   if (copied.heap != NULL) caml_actor_heap_destroy(copied.heap);
   if (infix_copy.heap != NULL) caml_actor_heap_destroy(infix_copy.heap);
+  if (elastic_copy.heap != NULL) caml_actor_heap_destroy(elastic_copy.heap);
   if (frozen) {
     world_status = caml_actor_world_thaw();
     if (world_status != CAML_ACTOR_WORLD_OK && code == 0) code = 14;
