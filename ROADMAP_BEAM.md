@@ -250,15 +250,15 @@ until the configuration API and spawn-copy path are wired and tested.
 - [x] Configure actor count, reductions, and message graph/serialization work
       with validated finite defaults owned by the actor world.
 - [x] Enforce mailbox message and byte quotas transactionally.
-- [ ] Expose current capacity, maximums, growth, and quota failures through
+- [x] Expose current capacity, maximums, growth, and quota failures through
       deterministic observability.
 - [ ] Pass the full local, sanitizer, package, benchmark, hygiene, and fresh
       runner gates and publish the stacked Layer 11 draft.
 
 ### Current next action
 
-Add transactional mailbox message and encoded-byte quotas without publishing
-partial sends or weakening receiver ownership.
+Run the complete Layer 10 compatibility, sanitizer, package, benchmark,
+hygiene, and fresh-runner gates for the completed Layer 11 implementation.
 
 ## Layer 12: structured exits and monitors
 

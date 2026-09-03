@@ -1,17 +1,3 @@
-(**************************************************************************)
-(*                                                                        *)
-(*                                 OCaml                                  *)
-(*                                                                        *)
-(*                             Dennis Dang                                *)
-(*                                                                        *)
-(*   Copyright 2026 Dennis Dang                                           *)
-(*                                                                        *)
-(*   All rights reserved.  This file is distributed under the terms of    *)
-(*   the GNU Lesser General Public License version 2.1, with the          *)
-(*   special exception on linking described in the file LICENSE.          *)
-(*                                                                        *)
-(**************************************************************************)
-
 (* TEST
  {
    linux;
@@ -69,6 +55,7 @@ let check_message_limit_and_recovery () =
       let full = Actor.stats () in
       assert (full.messages_sent = 1);
       assert (full.mailbox_messages = 1);
+      assert (full.mailbox_quota_failures = 1);
       ignore (Actor.receive root_inbox);
       send_or_fail child 3;
       ignore (Actor.receive root_inbox)))
@@ -83,8 +70,11 @@ let check_encoded_byte_limit () =
       Actor.yield ();
       assert ((Actor.stats ()).blocked_actors = 1);
       expect_quota child [0];
-      assert ((Actor.stats ()).mailbox_messages = 0);
-      assert ((Actor.stats ()).blocked_actors = 1);
+      let rejected = Actor.stats () in
+      assert (rejected.mailbox_messages = 0);
+      assert (rejected.mailbox_bytes = 0);
+      assert (rejected.mailbox_quota_failures = 1);
+      assert (rejected.blocked_actors = 1);
       send_or_fail child []));
   let shared = ref 7 in
   let aliased = (shared, shared) in
@@ -134,7 +124,8 @@ let check_stale_pid_precedes_quota () =
       let current = spawn_or_fail (fun inbox -> ignore (Actor.receive inbox)) in
       send_or_fail current ();
       match Actor.send stale () with
-      | Error Actor.No_such_actor -> ()
+      | Error Actor.No_such_actor ->
+          assert ((Actor.stats ()).mailbox_quota_failures = 0)
       | _ -> failwith "stale PID did not fail closed"))
 
 let () =
