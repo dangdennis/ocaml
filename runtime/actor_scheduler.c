@@ -52,6 +52,40 @@ CAMLextern value caml_array_blit(
   value destination_offset, value length);
 CAMLextern value caml_array_fill(
   value array, value offset, value length, value new_value);
+CAMLextern value caml_ml_string_length(value string);
+CAMLextern value caml_ml_bytes_length(value bytes);
+CAMLextern value caml_create_bytes(value length);
+CAMLextern value caml_string_get(value string, value index);
+CAMLextern value caml_bytes_get(value bytes, value index);
+CAMLextern value caml_bytes_set(value bytes, value index, value new_value);
+CAMLextern value caml_string_equal(value left, value right);
+CAMLextern value caml_string_notequal(value left, value right);
+CAMLextern value caml_string_compare(value left, value right);
+CAMLextern value caml_blit_bytes(
+  value source, value source_offset, value destination,
+  value destination_offset, value length);
+CAMLextern value caml_blit_string(
+  value source, value source_offset, value destination,
+  value destination_offset, value length);
+CAMLextern value caml_fill_bytes(
+  value bytes, value offset, value length, value new_value);
+CAMLextern value caml_string_of_bytes(value bytes);
+CAMLextern value caml_bytes_of_string(value string);
+CAMLextern value caml_hash(
+  value count, value limit, value seed, value object);
+CAMLextern value caml_compare(value left, value right);
+CAMLextern value caml_equal(value left, value right);
+CAMLextern value caml_notequal(value left, value right);
+CAMLextern value caml_lessthan(value left, value right);
+CAMLextern value caml_lessequal(value left, value right);
+CAMLextern value caml_greaterthan(value left, value right);
+CAMLextern value caml_greaterequal(value left, value right);
+CAMLextern value caml_int_of_string(value string);
+CAMLextern value caml_format_int(value format, value integer);
+CAMLextern value caml_add_float(value left, value right);
+CAMLextern value caml_eq_float(value left, value right);
+CAMLextern value caml_format_float(value format, value number);
+CAMLextern value caml_float_compare(value left, value right);
 CAMLextern value caml_actor_spawn(value closure);
 CAMLextern value caml_actor_self(value inbox);
 CAMLextern value caml_actor_yield(value unit);

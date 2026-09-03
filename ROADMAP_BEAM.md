@@ -55,7 +55,7 @@ part of the current roadmap.
 | Actor MVP 0-7 | `actor-mvp/*`, PRs #1-#10 | Published as a stacked draft implementation |
 | Layer 8: compatibility and observability baseline | `actor-real/08-contract-observability-baseline`, PR #11 | Published draft |
 | Layer 9: frozen global reads | `actor-real/09-frozen-global-reads`, PR #12 | Published draft and Layer 10 base |
-| Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities` | First audited primitive family published; full layer remains in progress |
+| Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | First audited primitive family published; full layer remains in progress |
 
 Layer 10 now extends the authoritative implementation boundary through commit
 `29786ee3cf`. Runtime enforcement and `ocamlactorcheck` consume one generated,
