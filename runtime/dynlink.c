@@ -54,6 +54,10 @@ struct ext_table caml_prim_table;
 /* The names of primitives */
 struct ext_table caml_prim_name_table;
 
+/* Immutable copies used to detect mutation of the live primitive tables. */
+struct ext_table caml_prim_original_table;
+struct ext_table caml_prim_original_name_table;
+
 /* The table of shared libraries currently opened */
 static struct ext_table shared_libs;
 
@@ -302,6 +306,8 @@ void caml_build_primitive_table(char_os * lib_path,
   /* Build the primitive table */
   caml_ext_table_init(&caml_prim_table, 0x180);
   caml_ext_table_init(&caml_prim_name_table, 0x180);
+  caml_ext_table_init(&caml_prim_original_table, 0x180);
+  caml_ext_table_init(&caml_prim_original_name_table, 0x180);
   if (req_prims != NULL)
     for (char *q = req_prims; *q != 0; q += strlen(q) + 1) {
       c_primitive prim = lookup_primitive(q);
@@ -309,6 +315,9 @@ void caml_build_primitive_table(char_os * lib_path,
             caml_fatal_error("unknown C primitive `%s'", q);
       caml_ext_table_add(&caml_prim_table, (void *) prim);
       caml_ext_table_add(&caml_prim_name_table, caml_stat_strdup(q));
+      caml_ext_table_add(&caml_prim_original_table, (void *) prim);
+      caml_ext_table_add(
+        &caml_prim_original_name_table, caml_stat_strdup(q));
     }
 }
 
@@ -322,6 +331,11 @@ void caml_build_primitive_table_builtin(void)
     caml_ext_table_add(&caml_prim_table, (void *) caml_builtin_cprim[i]);
     caml_ext_table_add(&caml_prim_name_table,
                        caml_stat_strdup(caml_names_of_builtin_cprim[i]));
+    caml_ext_table_add(
+      &caml_prim_original_table, (void *) caml_builtin_cprim[i]);
+    caml_ext_table_add(
+      &caml_prim_original_name_table,
+      caml_stat_strdup(caml_names_of_builtin_cprim[i]));
   }
 }
 

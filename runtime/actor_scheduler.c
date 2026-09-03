@@ -84,17 +84,6 @@ actor_primitive_policy[] = {
 #undef ACTOR_PRIMITIVE
 #undef CAML_ACTOR_NO_PRIMITIVE
 
-static c_primitive actor_builtin_primitive(const char *name)
-{
-  for (mlsize_t index = 0;
-       caml_names_of_builtin_cprim[index] != NULL; index++) {
-    if (strcmp(name, caml_names_of_builtin_cprim[index]) == 0) {
-      return caml_builtin_cprim[index];
-    }
-  }
-  return NULL;
-}
-
 struct caml_actor_slot {
   enum caml_actor_lifecycle lifecycle;
   enum caml_actor_failure failure;
@@ -1338,25 +1327,32 @@ int caml_actor_scheduler_primitive_allowed(uintnat primitive, int arity)
   const char *name;
 
   if (primitive >= (uintnat)caml_prim_table.size
-      || primitive >= (uintnat)caml_prim_name_table.size) return 0;
+      || primitive >= (uintnat)caml_prim_name_table.size
+      || primitive >= (uintnat)caml_prim_original_table.size
+      || primitive >= (uintnat)caml_prim_original_name_table.size) {
+    return 0;
+  }
   function = (c_primitive)caml_prim_table.contents[primitive];
   name = caml_prim_name_table.contents[primitive];
-  if (name == NULL) return 0;
+  if (name == NULL
+      || strcmp(name,
+                caml_prim_original_name_table.contents[primitive]) != 0
+      || function != (c_primitive)
+                       caml_prim_original_table.contents[primitive]) {
+    return 0;
+  }
   for (mlsize_t index = 0;
        index < sizeof(actor_primitive_policy)
                  / sizeof(actor_primitive_policy[0]);
        index++) {
     const struct caml_actor_primitive_policy_entry *entry =
       &actor_primitive_policy[index];
-    c_primitive expected;
 
     if (strcmp(name, entry->name) != 0) continue;
-    expected = actor_builtin_primitive(entry->name);
     return arity == entry->arity
       && entry->capability != CAML_ACTOR_PRIMITIVE_FORBIDDEN
       && entry->declared_function != NULL
-      && expected != NULL
-      && function == expected;
+      && function != NULL;
   }
   return 0;
 }

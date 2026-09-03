@@ -28,6 +28,8 @@ extern const char * const caml_names_of_builtin_cprim[];
 extern struct ext_table caml_prim_table;
 #ifndef NATIVE_CODE
 extern struct ext_table caml_prim_name_table;
+extern struct ext_table caml_prim_original_table;
+extern struct ext_table caml_prim_original_name_table;
 #endif
 
 #define Primitive1(n) \
