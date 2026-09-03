@@ -143,6 +143,7 @@ struct caml_actor_scheduler {
   uintnat reduction_budget;
   mlsize_t child_initial_heap_words;
   mlsize_t child_maximum_heap_words;
+  mlsize_t message_quota_words;
   struct caml_actor_slot *slots;
   uint32_t ready_head;
   uint32_t ready_tail;
@@ -442,7 +443,8 @@ static int scheduler_mailboxes_valid(
 
 struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   uintnat capacity, uintnat reduction_budget,
-  mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words)
+  mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words,
+  mlsize_t message_quota_words)
 {
   caml_domain_state *domain = Caml_state_opt;
   struct caml_actor_scheduler *scheduler;
@@ -456,6 +458,7 @@ struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
       || reduction_budget == 0
       || child_initial_heap_words == 0
       || child_initial_heap_words > child_maximum_heap_words
+      || message_quota_words == 0
       || capacity > SIZE_MAX / sizeof(*slots)) {
     return NULL;
   }
@@ -474,6 +477,7 @@ struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   scheduler->reduction_budget = reduction_budget;
   scheduler->child_initial_heap_words = child_initial_heap_words;
   scheduler->child_maximum_heap_words = child_maximum_heap_words;
+  scheduler->message_quota_words = message_quota_words;
   scheduler->slots = slots;
   scheduler->ready_head = ACTOR_SLOT_NONE;
   scheduler->ready_tail = ACTOR_SLOT_NONE;
@@ -501,7 +505,7 @@ struct caml_actor_scheduler *caml_actor_scheduler_create(
   uintnat capacity, uintnat reduction_budget)
 {
   return caml_actor_scheduler_create_configured(
-    capacity, reduction_budget, 1, 1);
+    capacity, reduction_budget, 1, 1, 1);
 }
 
 void caml_actor_scheduler_destroy(struct caml_actor_scheduler *scheduler)
@@ -1074,6 +1078,14 @@ enum caml_actor_send_status caml_actor_scheduler_can_send(
     return CAML_ACTOR_SEND_RESOURCE_UNAVAILABLE;
   }
   return CAML_ACTOR_SEND_OK;
+}
+
+int caml_actor_scheduler_message_quota_words(
+  struct caml_actor_scheduler *scheduler, mlsize_t *quota_words)
+{
+  if (!running_context_matches(scheduler) || quota_words == NULL) return 0;
+  *quota_words = scheduler->message_quota_words;
+  return 1;
 }
 
 enum caml_actor_send_status caml_actor_scheduler_prepare_send(
