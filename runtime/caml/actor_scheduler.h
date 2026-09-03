@@ -156,9 +156,19 @@ caml_actor_scheduler_prepare_root_closure(
   struct caml_actor_scheduler *scheduler, value closure,
   mlsize_t heap_quota_words, struct caml_actor_prepared_spawn **prepared);
 CAMLextern enum caml_actor_spawn_status
+caml_actor_scheduler_prepare_root_closure_sized(
+  struct caml_actor_scheduler *scheduler, value closure,
+  mlsize_t initial_heap_words, mlsize_t maximum_heap_words,
+  struct caml_actor_prepared_spawn **prepared);
+CAMLextern enum caml_actor_spawn_status
 caml_actor_scheduler_prepare_closure(
   struct caml_actor_scheduler *scheduler, value closure,
   mlsize_t heap_quota_words, struct caml_actor_prepared_spawn **prepared);
+CAMLextern enum caml_actor_spawn_status
+caml_actor_scheduler_prepare_closure_sized(
+  struct caml_actor_scheduler *scheduler, value closure,
+  mlsize_t initial_heap_words, mlsize_t maximum_heap_words,
+  struct caml_actor_prepared_spawn **prepared);
 CAMLextern uintnat caml_actor_scheduler_prepared_pid(
   const struct caml_actor_prepared_spawn *prepared);
 CAMLextern int caml_actor_scheduler_commit_prepared(

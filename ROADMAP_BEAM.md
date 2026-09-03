@@ -241,7 +241,7 @@ until the configuration API and spawn-copy path are wired and tested.
       rewriting.
 - [x] Pass the normal, debug, and instrumented actor suites for the internal
       heap slice: 23 passed and one expected platform skip in each runtime.
-- [ ] Thread separate initial and maximum sizes through root closure copying,
+- [x] Thread separate initial and maximum sizes through root closure copying,
       child closure copying, and scheduler slot preparation.
 - [ ] Add public validated world configuration and preserve existing defaults.
 - [ ] Add per-spawn heap overrides bounded by the world maximum.
@@ -254,9 +254,9 @@ until the configuration API and spawn-copy path are wired and tested.
 
 ### Current next action
 
-Write red scheduler and public-API tests for distinct root and child initial
-and maximum heap sizes, then thread the values through transactional closure
-copying without weakening the fixed-size compatibility entry points.
+Write red public-API tests for distinct root and child initial and maximum heap
+sizes. Add validated configuration entry points without weakening the
+fixed-size `Actor.run` and `Actor.spawn` defaults.
 
 ## Layer 12: structured exits and monitors
 
