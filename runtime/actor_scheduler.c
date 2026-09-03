@@ -68,7 +68,7 @@ enum caml_actor_primitive_capability {
 
 struct caml_actor_primitive_policy_entry {
   const char *name;
-  c_primitive function;
+  c_primitive declared_function;
   int arity;
   enum caml_actor_primitive_capability capability;
 };
@@ -83,6 +83,17 @@ actor_primitive_policy[] = {
 };
 #undef ACTOR_PRIMITIVE
 #undef CAML_ACTOR_NO_PRIMITIVE
+
+static c_primitive actor_builtin_primitive(const char *name)
+{
+  for (mlsize_t index = 0;
+       caml_names_of_builtin_cprim[index] != NULL; index++) {
+    if (strcmp(name, caml_names_of_builtin_cprim[index]) == 0) {
+      return caml_builtin_cprim[index];
+    }
+  }
+  return NULL;
+}
 
 struct caml_actor_slot {
   enum caml_actor_lifecycle lifecycle;
@@ -1337,11 +1348,15 @@ int caml_actor_scheduler_primitive_allowed(uintnat primitive, int arity)
        index++) {
     const struct caml_actor_primitive_policy_entry *entry =
       &actor_primitive_policy[index];
+    c_primitive expected;
+
     if (strcmp(name, entry->name) != 0) continue;
+    expected = actor_builtin_primitive(entry->name);
     return arity == entry->arity
       && entry->capability != CAML_ACTOR_PRIMITIVE_FORBIDDEN
-      && entry->function != NULL
-      && function == entry->function;
+      && entry->declared_function != NULL
+      && expected != NULL
+      && function == expected;
   }
   return 0;
 }
