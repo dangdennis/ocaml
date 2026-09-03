@@ -17,6 +17,7 @@
 
 /* Operations on arrays */
 #include <string.h>
+#include "caml/actor_heap.h"
 #include "caml/alloc.h"
 #include "caml/fail.h"
 #include "caml/memory.h"
@@ -251,9 +252,53 @@ CAMLprim value caml_uniform_array_make(value len, value init)
   CAMLreturn (res);
 }
 
+static value caml_actor_array_make(value len, value init)
+{
+  CAMLparam2(len, init);
+  CAMLlocal1(result);
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  intnat signed_size = Long_val(len);
+  mlsize_t size;
+
+  CAMLassert(heap != NULL);
+  if (signed_size < 0) caml_invalid_argument("Array.make");
+  size = (mlsize_t)signed_size;
+  if (size == 0) CAMLreturn(Atom(0));
+  if (!caml_actor_heap_value_is_storable(init)) {
+    caml_invalid_argument("Array.make: unsupported actor value");
+  }
+#ifdef FLAT_FLOAT_ARRAY
+  if (Is_block(init) && Tag_val(init) == Double_tag) {
+    mlsize_t wosize;
+    double initial;
+
+    if (size > Max_wosize / Double_wosize) {
+      caml_invalid_argument("Array.make");
+    }
+    wosize = size * Double_wosize;
+    initial = Double_val(init);
+    result = caml_actor_heap_alloc_or_raise(
+      heap, wosize, Double_array_tag, 0);
+    for (mlsize_t index = 0; index < size; index++) {
+      Store_double_flat_field(result, index, initial);
+    }
+    CAMLreturn(result);
+  }
+#endif
+  if (size > Max_wosize) caml_invalid_argument("Array.make");
+  result = caml_actor_heap_alloc_or_raise(heap, size, 0, 0);
+  for (mlsize_t index = 0; index < size; index++) {
+    Field(result, index) = init;
+  }
+  CAMLreturn(result);
+}
+
 /* [len] is a [value] representing number of words or floats */
 CAMLprim value caml_array_make(value len, value init)
 {
+  if (caml_actor_heap_current() != NULL) {
+    return caml_actor_array_make(len, init);
+  }
 #ifdef FLAT_FLOAT_ARRAY
   if (Is_block(init)
       && Tag_val(init) == Double_tag) {
