@@ -186,7 +186,10 @@ static value actor_run(value root,
                        mlsize_t root_initial_heap_words,
                        mlsize_t root_maximum_heap_words,
                        mlsize_t child_initial_heap_words,
-                       mlsize_t child_maximum_heap_words)
+                       mlsize_t child_maximum_heap_words,
+                       uintnat actor_capacity,
+                       uintnat reduction_budget,
+                       mlsize_t message_quota_words)
 {
   CAMLparam1(root);
   CAMLlocal3(result, error, message_value);
@@ -223,8 +226,9 @@ static value actor_run(value root,
     goto cleanup;
   }
   scheduler = caml_actor_scheduler_create_configured(
-    ACTOR_MVP_CAPACITY, ACTOR_MVP_REDUCTIONS,
-    child_initial_heap_words, child_maximum_heap_words);
+    actor_capacity, reduction_budget,
+    child_initial_heap_words, child_maximum_heap_words,
+    message_quota_words);
   if (scheduler == NULL) goto cleanup;
 
   spawn_status = caml_actor_scheduler_prepare_root_closure_sized(
@@ -343,6 +347,9 @@ CAMLprim value caml_actor_run(value root)
   mlsize_t root_maximum = ACTOR_MVP_ROOT_HEAP_WORDS;
   mlsize_t child_initial = ACTOR_MVP_CHILD_HEAP_WORDS;
   mlsize_t child_maximum = ACTOR_MVP_CHILD_HEAP_WORDS;
+  uintnat actor_capacity = ACTOR_MVP_CAPACITY;
+  uintnat reduction_budget = ACTOR_MVP_REDUCTIONS;
+  mlsize_t message_quota_words = ACTOR_MVP_MESSAGE_WORDS;
 
   entry = root;
   if (Is_block(root) && Tag_val(root) == 0 && Wosize_val(root) == 1) {
@@ -367,9 +374,44 @@ CAMLprim value caml_actor_run(value root)
     child_initial = Long_val(child_initial_value);
     child_maximum = Long_val(child_maximum_value);
     entry = Field(root, 4);
+  } else if (Is_block(root)
+             && Tag_val(root) == 0 && Wosize_val(root) == 8) {
+    value root_initial_value = Field(root, 0);
+    value root_maximum_value = Field(root, 1);
+    value child_initial_value = Field(root, 2);
+    value child_maximum_value = Field(root, 3);
+    value actor_capacity_value = Field(root, 4);
+    value reduction_budget_value = Field(root, 5);
+    value message_quota_value = Field(root, 6);
+
+    if (!Is_long(root_initial_value) || Long_val(root_initial_value) <= 0
+        || !Is_long(root_maximum_value)
+        || Long_val(root_maximum_value) < Long_val(root_initial_value)
+        || !Is_long(child_initial_value) || Long_val(child_initial_value) <= 0
+        || !Is_long(child_maximum_value)
+        || Long_val(child_maximum_value) < Long_val(child_initial_value)
+        || !Is_long(actor_capacity_value)
+        || Long_val(actor_capacity_value) < 2
+        || (uintnat)Long_val(actor_capacity_value)
+             > CAML_ACTOR_PID_INDEX_MASK + 1
+        || !Is_long(reduction_budget_value)
+        || Long_val(reduction_budget_value) <= 0
+        || !Is_long(message_quota_value)
+        || Long_val(message_quota_value) <= 0) {
+      caml_invalid_argument("Actor.run_with_config");
+    }
+    root_initial = Long_val(root_initial_value);
+    root_maximum = Long_val(root_maximum_value);
+    child_initial = Long_val(child_initial_value);
+    child_maximum = Long_val(child_maximum_value);
+    actor_capacity = Long_val(actor_capacity_value);
+    reduction_budget = Long_val(reduction_budget_value);
+    message_quota_words = Long_val(message_quota_value);
+    entry = Field(root, 7);
   }
   CAMLreturn(actor_run(
-    entry, root_initial, root_maximum, child_initial, child_maximum));
+    entry, root_initial, root_maximum, child_initial, child_maximum,
+    actor_capacity, reduction_budget, message_quota_words));
 }
 
 static value actor_spawn(value closure, mlsize_t initial_heap_words,
@@ -530,6 +572,7 @@ CAMLprim value caml_actor_send(value pid_value, value message)
   struct caml_actor_prepared_send *prepared = NULL;
   struct caml_actor_wire_encode_result encoded;
   enum caml_actor_send_status send_status;
+  mlsize_t message_quota_words;
   uintnat pid;
   value result;
 
@@ -551,7 +594,13 @@ CAMLprim value caml_actor_send(value pid_value, value message)
     return Val_unit;
   }
 
-  encoded = caml_actor_wire_encode(message, ACTOR_MVP_MESSAGE_WORDS);
+  if (!caml_actor_scheduler_message_quota_words(
+        scheduler, &message_quota_words)) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+
+  encoded = caml_actor_wire_encode(message, message_quota_words);
   if (encoded.status != CAML_ACTOR_WIRE_ENCODE_OK) {
     if (encoded.status == CAML_ACTOR_WIRE_ENCODE_TOO_LARGE) {
       return actor_send_error(1, NULL);

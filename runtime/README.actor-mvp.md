@@ -34,6 +34,16 @@ module Actor : sig
   val default_root_heap_limits : heap_limits
   val default_child_heap_limits : heap_limits
 
+  type world_config = {
+    root_heap : heap_limits;
+    child_heap : heap_limits;
+    max_actors : int;
+    reductions_per_slice : int;
+    max_message_words : int;
+  }
+
+  val default_world_config : world_config
+
   type run_error =
     | Unsupported_runtime
     | Root_failed of string
@@ -68,6 +78,8 @@ module Actor : sig
   val run : (unit inbox -> unit) -> (unit, run_error) result
   val run_with_heap_limits :
     root:heap_limits -> child:heap_limits ->
+    (unit inbox -> unit) -> (unit, run_error) result
+  val run_with_config : world_config ->
     (unit inbox -> unit) -> (unit, run_error) result
   val spawn : ('message inbox -> unit) ->
     ('message pid, spawn_error) result
@@ -105,6 +117,14 @@ pair or for a per-spawn maximum above the world's configured child maximum.
 Both entry points reuse the established `caml_actor_run/1` and
 `caml_actor_spawn/1` primitive names so the boot runtime can still load the
 rebuilt standard library and compiler.
+
+`run_with_config` also validates the finite actor count, positive reduction
+budget, and positive per-send message graph limit before freezing. The
+defaults remain 1,024 actors including the root, 1,000 reductions per slice,
+and 65,536 graph words per send. The scheduler owns this immutable
+configuration. Message encoding obtains its quota only through the active
+scheduler context, then discovers and validates the complete graph before
+publishing any pointer-free envelope.
 
 ## Execution semantics
 

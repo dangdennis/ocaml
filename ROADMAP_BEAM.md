@@ -247,7 +247,8 @@ until the configuration API and spawn-copy path are wired and tested.
 - [x] Add public validated world heap configuration and preserve existing
       fixed-size defaults.
 - [x] Add per-spawn heap overrides bounded by the configured child maximum.
-- [ ] Configure actor count, reductions, and message graph/serialization work.
+- [x] Configure actor count, reductions, and message graph/serialization work
+      with validated finite defaults owned by the actor world.
 - [ ] Enforce mailbox message and byte quotas transactionally.
 - [ ] Expose current capacity, maximums, growth, and quota failures through
       deterministic observability.
@@ -256,8 +257,8 @@ until the configuration API and spawn-copy path are wired and tested.
 
 ### Current next action
 
-Move actor count, reduction budget, and message graph/serialization limits out
-of hard-coded runtime constants and into validated world configuration.
+Add transactional mailbox message and encoded-byte quotas without publishing
+partial sends or weakening receiver ownership.
 
 ## Layer 12: structured exits and monitors
 

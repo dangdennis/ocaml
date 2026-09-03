@@ -37,6 +37,20 @@ type heap_limits = {
 val default_root_heap_limits : heap_limits
 val default_child_heap_limits : heap_limits
 
+type world_config = {
+  root_heap : heap_limits;
+  child_heap : heap_limits;
+  max_actors : int;
+  reductions_per_slice : int;
+  max_message_words : int;
+}
+(** Immutable actor-world limits. [max_actors] includes the root actor and must
+    be between 2 and 65,536. Reduction and message limits must be positive.
+    [max_message_words] bounds graph discovery and pointer-free serialization
+    work for each send. *)
+
+val default_world_config : world_config
+
 type run_error =
   | Unsupported_runtime
   | Root_failed of string
@@ -83,6 +97,11 @@ val run_with_heap_limits :
 (** [run_with_heap_limits ~root ~child entry] uses elastic heaps for the root
     and for children created by {!spawn}. It raises [Invalid_argument] before
     entering the actor world when either limit pair is invalid. *)
+
+val run_with_config : world_config ->
+  (unit inbox -> unit) -> (unit, run_error) result
+(** [run_with_config config entry] validates every limit before freezing the
+    host world. It raises [Invalid_argument] for an invalid configuration. *)
 
 external spawn : ('message inbox -> unit) ->
   ('message pid, spawn_error) result

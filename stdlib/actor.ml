@@ -30,6 +30,22 @@ let default_child_heap_limits = {
   maximum_words = 1 lsl 16;
 }
 
+type world_config = {
+  root_heap : heap_limits;
+  child_heap : heap_limits;
+  max_actors : int;
+  reductions_per_slice : int;
+  max_message_words : int;
+}
+
+let default_world_config = {
+  root_heap = default_root_heap_limits;
+  child_heap = default_child_heap_limits;
+  max_actors = 1_024;
+  reductions_per_slice = 1_000;
+  max_message_words = 1 lsl 16;
+}
+
 type run_error =
   | Unsupported_runtime
   | Root_failed of string
@@ -74,6 +90,20 @@ let run_with_heap_limits ~root ~child entry =
   run_request
     (root.initial_words, root.maximum_words,
      child.initial_words, child.maximum_words, entry)
+
+type configured_run_request =
+  int * int * int * int * int * int * int * (unit inbox -> unit)
+
+external configured_run_request : configured_run_request ->
+  (unit, run_error) result
+  = "caml_actor_run"
+
+let run_with_config config entry =
+  configured_run_request
+    (config.root_heap.initial_words, config.root_heap.maximum_words,
+     config.child_heap.initial_words, config.child_heap.maximum_words,
+     config.max_actors, config.reductions_per_slice,
+     config.max_message_words, entry)
 
 type 'message spawn_request =
   int * int * ('message inbox -> unit)
