@@ -91,6 +91,9 @@ struct caml_actor_world {
   uintnat global_entry_plus_one;
 };
 
+static struct caml_actor_world *actor_world_for_global_read(
+  caml_domain_state *domain);
+
 static int heap_interval_compare(const void *left, const void *right)
 {
   const struct caml_actor_heap_interval *left_interval = left;
@@ -903,6 +906,33 @@ int caml_actor_world_value_is_approved(value candidate)
       && frozen_entry_is_actor_visible(&graph.entries[index])
       && frozen_entry_header_is_exact(&graph.entries[index]);
   }
+}
+
+int caml_actor_world_frozen_snapshot(
+  value candidate, header_t *header, const value **payload)
+{
+  caml_domain_state *domain = Caml_state_opt;
+  struct caml_actor_world *world;
+  struct caml_actor_frozen_graph graph;
+  struct caml_actor_frozen_entry *entry;
+  uintnat index;
+
+  if (header == NULL || payload == NULL || !Is_block(candidate)
+      || candidate == 0) {
+    return 0;
+  }
+  world = actor_world_for_global_read(domain);
+  if (world == NULL) return 0;
+  graph = frozen_graph_of_world(world);
+  if (!frozen_graph_lookup(&graph, candidate, &index)) return 0;
+  entry = &graph.entries[index];
+  if (entry->block != candidate || !frozen_entry_is_actor_visible(entry)
+      || !frozen_entry_header_is_exact(entry)) {
+    return 0;
+  }
+  *header = entry->header;
+  *payload = entry->payload;
+  return 1;
 }
 
 enum caml_actor_global_status caml_actor_world_prepare_global_image(void)

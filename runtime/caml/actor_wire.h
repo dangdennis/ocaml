@@ -45,9 +45,9 @@ struct caml_actor_wire_encode_result {
   struct caml_actor_envelope *envelope;
 };
 
-/* Encode [message] from the currently active actor heap.  The completed
-   envelope contains no OCaml value or heap pointer and remains unpublished
-   until its caller commits it to a mailbox. */
+/* Encode [message] from the current actor heap and approved frozen snapshot.
+   The completed envelope contains no OCaml value, heap pointer, or source
+   provenance and remains unpublished until its caller commits it. */
 CAMLextern struct caml_actor_wire_encode_result caml_actor_wire_encode(
   value message, mlsize_t quota_words);
 

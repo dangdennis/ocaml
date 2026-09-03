@@ -45,6 +45,11 @@ CAMLextern int caml_actor_world_register_frozen(value candidate);
 CAMLextern int caml_actor_world_value_is_frozen(value candidate);
 CAMLextern int caml_actor_world_value_is_approved(value candidate);
 
+/* Return the immutable C-owned snapshot for an exact frozen block identity.
+   The payload remains owned by the actor world and is valid until thaw. */
+CAMLextern int caml_actor_world_frozen_snapshot(
+  value candidate, header_t *header, const value **payload);
+
 /* Transactionally validate and snapshot the bytecode executable's global
    image.  Preparation runs in the frozen host context before an actor
    scheduler or heap is installed. */

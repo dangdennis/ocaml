@@ -59,8 +59,10 @@ struct caml_actor_envelope {
 struct actor_wire_source_node {
   value source;
   header_t header;
+  const value *payload;
   mlsize_t wosize;
   tag_t tag;
+  int frozen;
 };
 
 struct actor_wire_map_entry {
@@ -198,17 +200,18 @@ static enum caml_actor_wire_encode_status validate_source_node(
   const struct actor_wire_source_node *node)
 {
   if (node->wosize == 0 || Reserved_hd(node->header) != 0
-      || Color_hd(node->header) != NOT_MARKABLE) {
+      || (!node->frozen && Color_hd(node->header) != NOT_MARKABLE)) {
     return CAML_ACTOR_WIRE_ENCODE_INVALID_SOURCE;
   }
   if (node->tag < Forcing_tag) return CAML_ACTOR_WIRE_ENCODE_OK;
   switch (node->tag) {
   case String_tag: {
     mlsize_t bytes = Bsize_wsize(node->wosize);
-    unsigned padding = Byte_u(node->source, bytes - 1);
+    const unsigned char *payload = (const unsigned char *)node->payload;
+    unsigned padding = payload[bytes - 1];
 
     if (padding >= sizeof(value)
-        || Byte_u(node->source, bytes - 1 - padding) != 0) {
+        || payload[bytes - 1 - padding] != 0) {
       return CAML_ACTOR_WIRE_ENCODE_INVALID_SOURCE;
     }
     return CAML_ACTOR_WIRE_ENCODE_OK;
@@ -241,16 +244,24 @@ static int discover_value(struct actor_wire_context *context,
   uintnat ignored;
   uintnat index;
   mlsize_t block_words;
+  const value *frozen_payload;
 
   if (Is_long(candidate) || canonical_atom(candidate, &ignored)) return 1;
-  if (!caml_actor_heap_owns_value(context->source_heap, candidate)) {
-    context->status = CAML_ACTOR_WIRE_ENCODE_INVALID_SOURCE;
-    return 0;
-  }
   if (map_lookup(context, candidate, &index)) return 1;
 
   node.source = candidate;
-  node.header = Hd_val(candidate);
+  node.frozen = 0;
+  if (caml_actor_heap_owns_value(context->source_heap, candidate)) {
+    node.header = Hd_val(candidate);
+    node.payload = Op_val(candidate);
+  } else if (caml_actor_world_frozen_snapshot(
+               candidate, &node.header, &frozen_payload)) {
+    node.payload = frozen_payload;
+    node.frozen = 1;
+  } else {
+    context->status = CAML_ACTOR_WIRE_ENCODE_INVALID_SOURCE;
+    return 0;
+  }
   node.wosize = Wosize_hd(node.header);
   node.tag = Tag_hd(node.header);
   status = validate_source_node(&node);
@@ -290,7 +301,7 @@ static int discover_graph(struct actor_wire_context *context, value root)
 {
   if (!discover_value(context, root)) return 0;
   for (uintnat index = 0; index < context->node_count; index++) {
-    value source = context->nodes[index].source;
+    const value *payload = context->nodes[index].payload;
     mlsize_t wosize = context->nodes[index].wosize;
     tag_t tag = context->nodes[index].tag;
 
@@ -299,7 +310,9 @@ static int discover_graph(struct actor_wire_context *context, value root)
        child. */
     if (tag >= Forcing_tag) continue;
     for (mlsize_t field = 0; field < wosize; field++) {
-      if (!discover_value(context, Field(source, field))) return 0;
+      if (!discover_value(context, payload[field])) {
+        return 0;
+      }
     }
   }
   return 1;
@@ -365,8 +378,19 @@ static struct caml_actor_envelope *build_envelope(
   for (uintnat index = 0; index < context->node_count; index++) {
     struct actor_wire_source_node *source = &context->nodes[index];
     struct actor_wire_node *target = &envelope->nodes[index];
+    header_t frozen_header;
+    const value *frozen_payload;
 
-    if (Hd_val(source->source) != source->header) goto internal;
+    if (source->frozen) {
+      if (!caml_actor_world_frozen_snapshot(
+            source->source, &frozen_header, &frozen_payload)
+          || frozen_header != source->header
+          || frozen_payload != source->payload) {
+        goto internal;
+      }
+    } else if (Hd_val(source->source) != source->header) {
+      goto internal;
+    }
     target->wosize = source->wosize;
     target->tag = source->tag;
     if (source->tag < Forcing_tag) {
@@ -374,7 +398,7 @@ static struct caml_actor_envelope *build_envelope(
       target->payload_index = token_index;
       for (mlsize_t field = 0; field < source->wosize; field++) {
         if (!encode_token(
-              context, Field(source->source, field),
+              context, source->payload[field],
               &envelope->tokens[token_index++])) {
           goto internal;
         }
@@ -384,7 +408,7 @@ static struct caml_actor_envelope *build_envelope(
 
       target->scanned = 0;
       target->payload_index = raw_index;
-      memcpy(envelope->raw + raw_index, Op_val(source->source), bytes);
+      memcpy(envelope->raw + raw_index, source->payload, bytes);
       raw_index += bytes;
     }
   }
