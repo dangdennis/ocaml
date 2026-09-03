@@ -56,7 +56,7 @@ part of the current roadmap.
 | Layer 8: compatibility and observability baseline | `actor-real/08-contract-observability-baseline`, PR #11 | Published draft |
 | Layer 9: frozen global reads | `actor-real/09-frozen-global-reads`, PR #12 | Published draft and Layer 10 base |
 | Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | Complete and published as a stacked draft |
-| Layer 11: elastic heaps and configurable limits | `actor-real/11-elastic-heaps`, PR #14 | In progress; elastic heap and spawn-copy slices published |
+| Layer 11: elastic heaps and configurable limits | `actor-real/11-elastic-heaps`, PR #14 | Complete and published as a stacked draft |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -252,13 +252,26 @@ until the configuration API and spawn-copy path are wired and tested.
 - [x] Enforce mailbox message and byte quotas transactionally.
 - [x] Expose current capacity, maximums, growth, and quota failures through
       deterministic observability.
-- [ ] Pass the full local, sanitizer, package, benchmark, hygiene, and fresh
+- [x] Pass the full local, sanitizer, package, benchmark, hygiene, and fresh
       runner gates and publish the stacked Layer 11 draft.
+
+### Validation checkpoint
+
+Layer 11 closed at implementation tip `a5194fbf32`. The local normal, debug,
+and instrumented actor suites each passed 24 tests with one expected platform
+skip. The tooling suites, benchmark smoke, pinned Astring package canary, and
+relevant callback, backtrace, and effects bytecode suites passed. Fresh-runner
+Actor Runtime (`33761176724`), Hygiene (`33761176638`), full Build
+(`33761176621`), and MSVC (`33761176729`) workflows passed at that exact tip:
+35 checks passed and eight platform- or event-specific checks skipped as
+expected.
 
 ### Current next action
 
-Run the complete Layer 10 compatibility, sanitizer, package, benchmark,
-hygiene, and fresh-runner gates for the completed Layer 11 implementation.
+Begin Layer 12 with red tests for pointer-free structured exit reasons and
+monitor identity. Preserve Layer 11's actor-owned heaps, receiver-owned
+mailbox copies, transactional quotas, stale-PID ordering, and fail-closed
+primitive and statistics ownership checks.
 
 ## Layer 12: structured exits and monitors
 
