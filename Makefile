@@ -2576,7 +2576,18 @@ ocamlactorcheck_LIBRARIES = \
   $(addprefix compilerlibs/,ocamlcommon ocamlbytecomp)
 ocamlactorcheck_SOURCES = $(addprefix tools/, \
   bytecode_shape.mli bytecode_shape.ml \
+  actor_primitive_policy.mli actor_primitive_policy.ml \
   ocamlactorcheck.mli ocamlactorcheck.ml)
+
+tools/actor_primitive_policy.ml: \
+  runtime/actor_primitive_policy.def tools/gen_actor_primitive_policy.sh
+	$(V_GEN)$(SHELL) tools/gen_actor_primitive_policy.sh $< > $@
+
+clean::
+	rm -f tools/actor_primitive_policy.ml
+
+beforedepend:: tools/actor_primitive_policy.ml
+
 
 
 # Display info on compiled files

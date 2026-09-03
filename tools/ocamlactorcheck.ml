@@ -290,10 +290,27 @@ let print_finding symbols primitives = function
       print_global symbols global;
       Printf.printf " classification=initialization-or-actor-forbidden\n"
   | Primitive_call {pc; opcode; primitive; arity} ->
-      Printf.printf
-        "pc=%d opcode=%s primitive=%d:%S arity=%d \
-         classification=unclassified\n"
-        pc opcode primitive primitives.(primitive) arity
+      let name = primitives.(primitive) in
+      Printf.printf "pc=%d opcode=%s primitive=%d:%S arity=%d"
+        pc opcode primitive name arity;
+      begin match Actor_primitive_policy.classify name arity with
+      | Allowed entry ->
+          Printf.printf " classification=%s family=%s\n"
+            (Actor_primitive_policy.capability_name entry.capability)
+            entry.family
+      | Denied entry ->
+          Printf.printf " classification=forbidden family=%s\n" entry.family
+      | Arity_mismatch entry ->
+          Printf.printf
+            " classification=forbidden reason=arity-mismatch expected=%d \
+             declared=%s family=%s\n"
+            entry.arity
+            (Actor_primitive_policy.capability_name entry.capability)
+            entry.family
+      | Unknown ->
+          Printf.printf
+            " classification=forbidden reason=unknown-primitive\n"
+      end
 
 let inspect filename =
   let ic = open_in_bin filename in

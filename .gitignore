@@ -283,6 +283,7 @@ META
 /tools/ocamldep.opt
 /tools/ocamlprof
 /tools/ocamlprof.opt
+/tools/actor_primitive_policy.ml
 /tools/dumpobj
 /tools/dumpobj.opt
 /tools/ocamlactorcheck

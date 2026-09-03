@@ -92,6 +92,9 @@ struct actor_gc_context {
   int valid;
 };
 
+static int actor_store_value_supported(struct caml_actor_heap *heap,
+                                       value new_value);
+
 static int actor_heap_registered(const struct caml_actor_heap *candidate)
 {
   struct caml_actor_heap *heap;
@@ -916,6 +919,13 @@ int caml_actor_heap_contains_address(value candidate)
   if (!Is_block(candidate)) return 0;
   lookup_actor_value(candidate, &lookup);
   return lookup.heap != NULL;
+}
+
+int caml_actor_heap_value_is_storable(value candidate)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+
+  return heap != NULL && actor_store_value_supported(heap, candidate);
 }
 
 uintnat caml_actor_heap_owner(const struct caml_actor_heap *heap)
