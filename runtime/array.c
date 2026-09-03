@@ -18,6 +18,7 @@
 /* Operations on arrays */
 #include <string.h>
 #include "caml/actor_heap.h"
+#include "caml/actor_scheduler.h"
 #include "caml/alloc.h"
 #include "caml/fail.h"
 #include "caml/memory.h"
@@ -56,6 +57,21 @@ static int caml_actor_array_range(value array, intnat offset, intnat length,
     && caml_actor_array_info(array, array_length, tag)
     && (uintnat)offset <= *array_length
     && (uintnat)length <= *array_length - (uintnat)offset;
+}
+
+static value caml_actor_array_alloc(struct caml_actor_heap *heap,
+                                    mlsize_t wosize, tag_t tag)
+{
+  enum caml_actor_heap_alloc_error error;
+  value result = caml_actor_heap_try_alloc(heap, wosize, tag, 0, &error);
+
+  if (result != 0) return result;
+  if (error == CAML_ACTOR_HEAP_ALLOC_QUOTA) {
+    caml_actor_scheduler_request_heap_exhausted();
+  } else {
+    caml_actor_scheduler_request_unsupported();
+  }
+  return 0;
 }
 
 /* returns number of elements (either fields or floats) */
@@ -338,8 +354,8 @@ static value caml_actor_array_make(value len, value init)
     }
     wosize = size * Double_wosize;
     initial = Double_val(init);
-    result = caml_actor_heap_alloc_or_raise(
-      heap, wosize, Double_array_tag, 0);
+    result = caml_actor_array_alloc(heap, wosize, Double_array_tag);
+    if (result == 0) CAMLreturn(Atom(0));
     for (mlsize_t index = 0; index < size; index++) {
       Store_double_flat_field(result, index, initial);
     }
@@ -347,7 +363,8 @@ static value caml_actor_array_make(value len, value init)
   }
 #endif
   if (size > Max_wosize) caml_invalid_argument("Array.make");
-  result = caml_actor_heap_alloc_or_raise(heap, size, 0, 0);
+  result = caml_actor_array_alloc(heap, size, 0);
+  if (result == 0) CAMLreturn(Atom(0));
   for (mlsize_t index = 0; index < size; index++) {
     Field(result, index) = init;
   }
