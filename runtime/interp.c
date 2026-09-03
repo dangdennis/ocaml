@@ -1423,7 +1423,8 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       }
       Next;
     Instruct(C_CALL3):
-      if (Actor_scheduler_running()) {
+      if (Actor_scheduler_running()
+          && !caml_actor_scheduler_primitive_allowed(*pc, 3)) {
         caml_actor_scheduler_record_unsupported_primitive(*pc, 3);
         goto unsupported_operation;
       }
@@ -1432,9 +1433,22 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       Restore_after_c_call;
       sp += 2;
       pc++;
+      if (Actor_scheduler_running()) {
+        enum caml_actor_control_request request =
+          caml_actor_scheduler_take_control_request();
+
+        if (request == CAML_ACTOR_CONTROL_YIELD) goto actor_yield;
+        if (request == CAML_ACTOR_CONTROL_UNSUPPORTED) {
+          caml_actor_scheduler_record_unsupported_primitive(pc[-1], 3);
+          goto unsupported_operation;
+        }
+        if (request == CAML_ACTOR_CONTROL_HEAP_EXHAUSTED)
+          goto actor_heap_exhausted;
+      }
       Next;
     Instruct(C_CALL4):
-      if (Actor_scheduler_running()) {
+      if (Actor_scheduler_running()
+          && !caml_actor_scheduler_primitive_allowed(*pc, 4)) {
         caml_actor_scheduler_record_unsupported_primitive(*pc, 4);
         goto unsupported_operation;
       }
@@ -1443,9 +1457,22 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       Restore_after_c_call;
       sp += 3;
       pc++;
+      if (Actor_scheduler_running()) {
+        enum caml_actor_control_request request =
+          caml_actor_scheduler_take_control_request();
+
+        if (request == CAML_ACTOR_CONTROL_YIELD) goto actor_yield;
+        if (request == CAML_ACTOR_CONTROL_UNSUPPORTED) {
+          caml_actor_scheduler_record_unsupported_primitive(pc[-1], 4);
+          goto unsupported_operation;
+        }
+        if (request == CAML_ACTOR_CONTROL_HEAP_EXHAUSTED)
+          goto actor_heap_exhausted;
+      }
       Next;
     Instruct(C_CALL5):
-      if (Actor_scheduler_running()) {
+      if (Actor_scheduler_running()
+          && !caml_actor_scheduler_primitive_allowed(*pc, 5)) {
         caml_actor_scheduler_record_unsupported_primitive(*pc, 5);
         goto unsupported_operation;
       }
@@ -1454,6 +1481,18 @@ enum caml_bytecode_stop_reason caml_bytecode_interpreter_slice(
       Restore_after_c_call;
       sp += 4;
       pc++;
+      if (Actor_scheduler_running()) {
+        enum caml_actor_control_request request =
+          caml_actor_scheduler_take_control_request();
+
+        if (request == CAML_ACTOR_CONTROL_YIELD) goto actor_yield;
+        if (request == CAML_ACTOR_CONTROL_UNSUPPORTED) {
+          caml_actor_scheduler_record_unsupported_primitive(pc[-1], 5);
+          goto unsupported_operation;
+        }
+        if (request == CAML_ACTOR_CONTROL_HEAP_EXHAUSTED)
+          goto actor_heap_exhausted;
+      }
       Next;
     Instruct(C_CALLN): {
       int nargs;

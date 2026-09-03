@@ -1327,20 +1327,10 @@ int caml_actor_scheduler_primitive_allowed(uintnat primitive, int arity)
   const char *name;
 
   if (primitive >= (uintnat)caml_prim_table.size
-      || primitive >= (uintnat)caml_prim_name_table.size
-      || primitive >= (uintnat)caml_prim_original_table.size
-      || primitive >= (uintnat)caml_prim_original_name_table.size) {
-    return 0;
-  }
+      || primitive >= (uintnat)caml_prim_name_table.size) return 0;
   function = (c_primitive)caml_prim_table.contents[primitive];
   name = caml_prim_name_table.contents[primitive];
-  if (name == NULL
-      || strcmp(name,
-                caml_prim_original_name_table.contents[primitive]) != 0
-      || function != (c_primitive)
-                       caml_prim_original_table.contents[primitive]) {
-    return 0;
-  }
+  if (name == NULL) return 0;
   for (mlsize_t index = 0;
        index < sizeof(actor_primitive_policy)
                  / sizeof(actor_primitive_policy[0]);
@@ -1352,7 +1342,7 @@ int caml_actor_scheduler_primitive_allowed(uintnat primitive, int arity)
     return arity == entry->arity
       && entry->capability != CAML_ACTOR_PRIMITIVE_FORBIDDEN
       && entry->declared_function != NULL
-      && function != NULL;
+      && function == entry->declared_function;
   }
   return 0;
 }
