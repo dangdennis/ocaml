@@ -35,6 +35,8 @@
 #define ACTOR_MVP_ROOT_HEAP_WORDS ((mlsize_t)1 << 18)
 #define ACTOR_MVP_CHILD_HEAP_WORDS ((mlsize_t)1 << 16)
 #define ACTOR_MVP_MESSAGE_WORDS ((mlsize_t)1 << 16)
+#define ACTOR_MVP_MAILBOX_MESSAGES ((uintnat)1 << 16)
+#define ACTOR_MVP_MAILBOX_BYTES ((uintnat)1 << 28)
 
 enum actor_run_outcome {
   ACTOR_RUN_OK = 0,
@@ -189,7 +191,9 @@ static value actor_run(value root,
                        mlsize_t child_maximum_heap_words,
                        uintnat actor_capacity,
                        uintnat reduction_budget,
-                       mlsize_t message_quota_words)
+                       mlsize_t message_quota_words,
+                       uintnat mailbox_message_limit,
+                       uintnat mailbox_byte_limit)
 {
   CAMLparam1(root);
   CAMLlocal3(result, error, message_value);
@@ -228,7 +232,7 @@ static value actor_run(value root,
   scheduler = caml_actor_scheduler_create_configured(
     actor_capacity, reduction_budget,
     child_initial_heap_words, child_maximum_heap_words,
-    message_quota_words);
+    message_quota_words, mailbox_message_limit, mailbox_byte_limit);
   if (scheduler == NULL) goto cleanup;
 
   spawn_status = caml_actor_scheduler_prepare_root_closure_sized(
@@ -350,6 +354,8 @@ CAMLprim value caml_actor_run(value root)
   uintnat actor_capacity = ACTOR_MVP_CAPACITY;
   uintnat reduction_budget = ACTOR_MVP_REDUCTIONS;
   mlsize_t message_quota_words = ACTOR_MVP_MESSAGE_WORDS;
+  uintnat mailbox_message_limit = ACTOR_MVP_MAILBOX_MESSAGES;
+  uintnat mailbox_byte_limit = ACTOR_MVP_MAILBOX_BYTES;
 
   entry = root;
   if (Is_block(root) && Tag_val(root) == 0 && Wosize_val(root) == 1) {
@@ -375,7 +381,7 @@ CAMLprim value caml_actor_run(value root)
     child_maximum = Long_val(child_maximum_value);
     entry = Field(root, 4);
   } else if (Is_block(root)
-             && Tag_val(root) == 0 && Wosize_val(root) == 8) {
+             && Tag_val(root) == 0 && Wosize_val(root) == 10) {
     value root_initial_value = Field(root, 0);
     value root_maximum_value = Field(root, 1);
     value child_initial_value = Field(root, 2);
@@ -383,6 +389,8 @@ CAMLprim value caml_actor_run(value root)
     value actor_capacity_value = Field(root, 4);
     value reduction_budget_value = Field(root, 5);
     value message_quota_value = Field(root, 6);
+    value mailbox_message_limit_value = Field(root, 7);
+    value mailbox_byte_limit_value = Field(root, 8);
 
     if (!Is_long(root_initial_value) || Long_val(root_initial_value) <= 0
         || !Is_long(root_maximum_value)
@@ -397,7 +405,11 @@ CAMLprim value caml_actor_run(value root)
         || !Is_long(reduction_budget_value)
         || Long_val(reduction_budget_value) <= 0
         || !Is_long(message_quota_value)
-        || Long_val(message_quota_value) <= 0) {
+        || Long_val(message_quota_value) <= 0
+        || !Is_long(mailbox_message_limit_value)
+        || Long_val(mailbox_message_limit_value) <= 0
+        || !Is_long(mailbox_byte_limit_value)
+        || Long_val(mailbox_byte_limit_value) <= 0) {
       caml_invalid_argument("Actor.run_with_config");
     }
     root_initial = Long_val(root_initial_value);
@@ -407,11 +419,14 @@ CAMLprim value caml_actor_run(value root)
     actor_capacity = Long_val(actor_capacity_value);
     reduction_budget = Long_val(reduction_budget_value);
     message_quota_words = Long_val(message_quota_value);
-    entry = Field(root, 7);
+    mailbox_message_limit = Long_val(mailbox_message_limit_value);
+    mailbox_byte_limit = Long_val(mailbox_byte_limit_value);
+    entry = Field(root, 9);
   }
   CAMLreturn(actor_run(
     entry, root_initial, root_maximum, child_initial, child_maximum,
-    actor_capacity, reduction_budget, message_quota_words));
+    actor_capacity, reduction_budget, message_quota_words,
+    mailbox_message_limit, mailbox_byte_limit));
 }
 
 static value actor_spawn(value closure, mlsize_t initial_heap_words,
@@ -589,6 +604,10 @@ CAMLprim value caml_actor_send(value pid_value, value message)
   if (send_status == CAML_ACTOR_SEND_NO_SUCH_ACTOR) {
     return actor_send_error(0, NULL);
   }
+  if (send_status == CAML_ACTOR_SEND_QUOTA) {
+    caml_actor_scheduler_record_mailbox_quota_failure(scheduler);
+    return actor_send_error(1, NULL);
+  }
   if (send_status != CAML_ACTOR_SEND_OK) {
     caml_actor_scheduler_request_unsupported();
     return Val_unit;
@@ -603,6 +622,7 @@ CAMLprim value caml_actor_send(value pid_value, value message)
   encoded = caml_actor_wire_encode(message, message_quota_words);
   if (encoded.status != CAML_ACTOR_WIRE_ENCODE_OK) {
     if (encoded.status == CAML_ACTOR_WIRE_ENCODE_TOO_LARGE) {
+      caml_actor_scheduler_record_mailbox_quota_failure(scheduler);
       return actor_send_error(1, NULL);
     }
     if (encoded.status == CAML_ACTOR_WIRE_ENCODE_INVALID_SOURCE
@@ -619,6 +639,10 @@ CAMLprim value caml_actor_send(value pid_value, value message)
     caml_actor_wire_destroy(encoded.envelope);
     if (send_status == CAML_ACTOR_SEND_NO_SUCH_ACTOR) {
       return actor_send_error(0, NULL);
+    }
+    if (send_status == CAML_ACTOR_SEND_QUOTA) {
+      caml_actor_scheduler_record_mailbox_quota_failure(scheduler);
+      return actor_send_error(1, NULL);
     }
     caml_actor_scheduler_request_unsupported();
     return Val_unit;

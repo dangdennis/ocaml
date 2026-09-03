@@ -43,11 +43,15 @@ type world_config = {
   max_actors : int;
   reductions_per_slice : int;
   max_message_words : int;
+  max_mailbox_messages : int;
+  max_mailbox_bytes : int;
 }
 (** Immutable actor-world limits. [max_actors] includes the root actor and must
     be between 2 and 65,536. Reduction and message limits must be positive.
     [max_message_words] bounds graph discovery and pointer-free serialization
-    work for each send. *)
+    work for each send. [max_mailbox_messages] and [max_mailbox_bytes] bound
+    the aggregate queued envelopes in the actor world. All limits must be
+    positive. *)
 
 val default_world_config : world_config
 
@@ -122,7 +126,8 @@ external send : 'message pid -> 'message ->
   (unit, send_error) result
   = "caml_actor_send"
 (** [send pid message] transactionally copies [message] into [pid]'s FIFO
-    mailbox. Unsupported values and over-quota graphs are not published. *)
+    mailbox. Unsupported values, over-quota graphs, and sends exceeding the
+    world's aggregate mailbox limits are not published. *)
 
 external receive : 'message inbox -> 'message
   = "caml_actor_receive"

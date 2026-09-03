@@ -91,6 +91,8 @@ type world_config = {
   max_actors : int;
   reductions_per_slice : int;
   max_message_words : int;
+  max_mailbox_messages : int;
+  max_mailbox_bytes : int;
 }
 
 val default_world_config : world_config
@@ -108,6 +110,12 @@ ambient mutable configuration.
 Heap words, mailbox message count, mailbox encoded bytes, actor count, timer
 count, and scheduler-owned resource count all have explicit finite limits.
 Quota exhaustion is actor-local and observable through monitors.
+
+Layer 11 accounts queued mail globally at the scheduler boundary. An
+envelope's canonical byte charge is one root-token word plus the unique graph
+words discovered by the wire encoder, so aliases and cycles are charged once.
+The message and byte limits are rechecked at prepare and commit. A rejected
+send links no envelope, changes no mailbox gauge, and wakes no actor.
 
 ## Timers and socket ownership
 

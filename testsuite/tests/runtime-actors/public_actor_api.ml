@@ -159,6 +159,8 @@ let check_world_config () =
   assert (Actor.default_world_config.max_actors = 1_024);
   assert (Actor.default_world_config.reductions_per_slice = 1_000);
   assert (Actor.default_world_config.max_message_words = 1 lsl 16);
+  assert (Actor.default_world_config.max_mailbox_messages = 1 lsl 16);
+  assert (Actor.default_world_config.max_mailbox_bytes = 1 lsl 28);
   let actor_limited =
     config_with_limits ~max_actors:2 ~reductions_per_slice:1_000
       ~max_message_words:(1 lsl 16)
@@ -212,6 +214,10 @@ let check_world_config () =
   expect_invalid_config
     (config_with_limits ~max_actors:2 ~reductions_per_slice:1_000
        ~max_message_words:0);
+  expect_invalid_config
+    Actor.{ Actor.default_world_config with max_mailbox_messages = 0 };
+  expect_invalid_config
+    Actor.{ Actor.default_world_config with max_mailbox_bytes = 0 };
   expect_invalid_config
     Actor.{ Actor.default_world_config with root_heap = invalid_heap }
 
