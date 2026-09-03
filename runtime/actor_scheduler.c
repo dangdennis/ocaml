@@ -134,6 +134,7 @@ struct caml_actor_slot {
   struct caml_actor_prepared_send *mailbox_head;
   struct caml_actor_prepared_send *mailbox_tail;
   uintnat mailbox_length;
+  uintnat mailbox_bytes;
 };
 
 struct caml_actor_scheduler {
@@ -144,6 +145,8 @@ struct caml_actor_scheduler {
   mlsize_t child_initial_heap_words;
   mlsize_t child_maximum_heap_words;
   mlsize_t message_quota_words;
+  uintnat mailbox_message_limit;
+  uintnat mailbox_byte_limit;
   struct caml_actor_slot *slots;
   uint32_t ready_head;
   uint32_t ready_tail;
@@ -161,6 +164,8 @@ struct caml_actor_scheduler {
   uintnat messages_received;
   uintnat messages_dropped;
   uintnat mailbox_messages;
+  uintnat mailbox_bytes;
+  uintnat mailbox_quota_failures;
 
   struct stack_info *host_stack;
   int64_t host_stack_id;
@@ -187,6 +192,7 @@ struct caml_actor_prepared_send {
   uint32_t target_index;
   uintnat target_pid;
   struct caml_actor_envelope *envelope;
+  uintnat encoded_bytes;
   struct caml_actor_prepared_send *next;
 };
 
@@ -402,6 +408,7 @@ static void release_slot_resources(struct caml_actor_slot *slot)
   slot->mailbox_head = NULL;
   slot->mailbox_tail = NULL;
   slot->mailbox_length = 0;
+  slot->mailbox_bytes = 0;
   if (slot->stack != NULL) {
     caml_free_stack(slot->stack);
     slot->stack = NULL;
@@ -416,35 +423,55 @@ static void release_slot_resources(struct caml_actor_slot *slot)
 static int scheduler_mailboxes_valid(
   const struct caml_actor_scheduler *scheduler)
 {
+  uintnat total_messages = 0;
+  uintnat total_bytes = 0;
+
   for (uintnat index = 0; index < scheduler->capacity; index++) {
     const struct caml_actor_slot *slot = &scheduler->slots[index];
     const struct caml_actor_prepared_send *message = slot->mailbox_head;
     const struct caml_actor_prepared_send *last = NULL;
+    uintnat slot_bytes = 0;
 
     for (uintnat count = 0; count < slot->mailbox_length; count++) {
+      uintnat encoded_bytes;
+
       if (message == NULL || message->scheduler != NULL
           || message->target_index != index
           || message->target_pid != slot->pid
-          || !caml_actor_wire_verify(message->envelope)) {
+          || !caml_actor_wire_verify(message->envelope)
+          || !caml_actor_wire_encoded_bytes(
+               message->envelope, &encoded_bytes)
+          || encoded_bytes != message->encoded_bytes
+          || message->encoded_bytes > CAML_UINTNAT_MAX - slot_bytes) {
         return 0;
       }
+      slot_bytes += message->encoded_bytes;
       last = message;
       message = message->next;
     }
     if (message != NULL || last != slot->mailbox_tail
+        || slot_bytes != slot->mailbox_bytes
         || ((slot->mailbox_length == 0)
             != (slot->mailbox_head == NULL))) {
       return 0;
     }
+    if (slot->mailbox_length > CAML_UINTNAT_MAX - total_messages
+        || slot_bytes > CAML_UINTNAT_MAX - total_bytes) return 0;
+    total_messages += slot->mailbox_length;
+    total_bytes += slot_bytes;
   }
-  return 1;
+  return total_messages == scheduler->mailbox_messages
+    && total_bytes == scheduler->mailbox_bytes
+    && total_messages <= scheduler->mailbox_message_limit
+    && total_bytes <= scheduler->mailbox_byte_limit;
 }
 #endif
 
 struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   uintnat capacity, uintnat reduction_budget,
   mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words,
-  mlsize_t message_quota_words)
+  mlsize_t message_quota_words, uintnat mailbox_message_limit,
+  uintnat mailbox_byte_limit)
 {
   caml_domain_state *domain = Caml_state_opt;
   struct caml_actor_scheduler *scheduler;
@@ -459,6 +486,7 @@ struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
       || child_initial_heap_words == 0
       || child_initial_heap_words > child_maximum_heap_words
       || message_quota_words == 0
+      || mailbox_message_limit == 0 || mailbox_byte_limit == 0
       || capacity > SIZE_MAX / sizeof(*slots)) {
     return NULL;
   }
@@ -478,6 +506,8 @@ struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   scheduler->child_initial_heap_words = child_initial_heap_words;
   scheduler->child_maximum_heap_words = child_maximum_heap_words;
   scheduler->message_quota_words = message_quota_words;
+  scheduler->mailbox_message_limit = mailbox_message_limit;
+  scheduler->mailbox_byte_limit = mailbox_byte_limit;
   scheduler->slots = slots;
   scheduler->ready_head = ACTOR_SLOT_NONE;
   scheduler->ready_tail = ACTOR_SLOT_NONE;
@@ -505,7 +535,8 @@ struct caml_actor_scheduler *caml_actor_scheduler_create(
   uintnat capacity, uintnat reduction_budget)
 {
   return caml_actor_scheduler_create_configured(
-    capacity, reduction_budget, 1, 1, 1);
+    capacity, reduction_budget, 1, 1, 1,
+    CAML_UINTNAT_MAX, CAML_UINTNAT_MAX);
 }
 
 void caml_actor_scheduler_destroy(struct caml_actor_scheduler *scheduler)
@@ -1077,6 +1108,9 @@ enum caml_actor_send_status caml_actor_scheduler_can_send(
   if (slot->mailbox_length == CAML_UINTNAT_MAX) {
     return CAML_ACTOR_SEND_RESOURCE_UNAVAILABLE;
   }
+  if (scheduler->mailbox_messages >= scheduler->mailbox_message_limit) {
+    return CAML_ACTOR_SEND_QUOTA;
+  }
   return CAML_ACTOR_SEND_OK;
 }
 
@@ -1088,6 +1122,14 @@ int caml_actor_scheduler_message_quota_words(
   return 1;
 }
 
+int caml_actor_scheduler_record_mailbox_quota_failure(
+  struct caml_actor_scheduler *scheduler)
+{
+  if (!running_context_matches(scheduler)) return 0;
+  increment_counter(&scheduler->mailbox_quota_failures);
+  return 1;
+}
+
 enum caml_actor_send_status caml_actor_scheduler_prepare_send(
   struct caml_actor_scheduler *scheduler, uintnat pid,
   struct caml_actor_envelope *envelope,
@@ -1095,6 +1137,7 @@ enum caml_actor_send_status caml_actor_scheduler_prepare_send(
 {
   struct caml_actor_prepared_send *prepared;
   enum caml_actor_send_status status;
+  uintnat encoded_bytes;
 
   if (prepared_out != NULL) *prepared_out = NULL;
   if (prepared_out == NULL || envelope == NULL
@@ -1103,6 +1146,14 @@ enum caml_actor_send_status caml_actor_scheduler_prepare_send(
   }
   status = caml_actor_scheduler_can_send(scheduler, pid);
   if (status != CAML_ACTOR_SEND_OK) return status;
+  if (!caml_actor_wire_encoded_bytes(envelope, &encoded_bytes)) {
+    return CAML_ACTOR_SEND_INVALID_CONTEXT;
+  }
+  if (encoded_bytes > scheduler->mailbox_byte_limit
+      || scheduler->mailbox_bytes
+           > scheduler->mailbox_byte_limit - encoded_bytes) {
+    return CAML_ACTOR_SEND_QUOTA;
+  }
   prepared = calloc(1, sizeof(*prepared));
   if (prepared == NULL) return CAML_ACTOR_SEND_RESOURCE_UNAVAILABLE;
   prepared->scheduler = scheduler;
@@ -1110,6 +1161,7 @@ enum caml_actor_send_status caml_actor_scheduler_prepare_send(
     (uint32_t)(pid & CAML_ACTOR_PID_INDEX_MASK);
   prepared->target_pid = pid;
   prepared->envelope = envelope;
+  prepared->encoded_bytes = encoded_bytes;
   *prepared_out = prepared;
   return CAML_ACTOR_SEND_OK;
 }
@@ -1127,22 +1179,38 @@ int caml_actor_scheduler_commit_send(
 {
   struct caml_actor_scheduler *scheduler;
   struct caml_actor_slot *slot;
+  enum caml_actor_send_status status;
+  uintnat encoded_bytes;
 
   if (prepared == NULL || prepared->scheduler == NULL
       || prepared->envelope == NULL) {
     return 0;
   }
   scheduler = prepared->scheduler;
-  if (caml_actor_scheduler_can_send(
-        scheduler, prepared->target_pid) != CAML_ACTOR_SEND_OK
+  status = caml_actor_scheduler_can_send(scheduler, prepared->target_pid);
+  if (status != CAML_ACTOR_SEND_OK
       || prepared->target_index >= scheduler->capacity) {
+    if (status == CAML_ACTOR_SEND_QUOTA) {
+      increment_counter(&scheduler->mailbox_quota_failures);
+    }
     caml_actor_scheduler_abort_send(prepared);
     return 0;
   }
   slot = &scheduler->slots[prepared->target_index];
   if (slot->pid != prepared->target_pid
       || !caml_actor_wire_verify(prepared->envelope)
+      || !caml_actor_wire_encoded_bytes(
+           prepared->envelope, &encoded_bytes)
+      || encoded_bytes != prepared->encoded_bytes
       || scheduler->mailbox_messages == CAML_UINTNAT_MAX) {
+    caml_actor_scheduler_abort_send(prepared);
+    return 0;
+  }
+  if (scheduler->mailbox_messages >= scheduler->mailbox_message_limit
+      || encoded_bytes > scheduler->mailbox_byte_limit
+      || scheduler->mailbox_bytes
+           > scheduler->mailbox_byte_limit - encoded_bytes) {
+    increment_counter(&scheduler->mailbox_quota_failures);
     caml_actor_scheduler_abort_send(prepared);
     return 0;
   }
@@ -1155,8 +1223,10 @@ int caml_actor_scheduler_commit_send(
   }
   slot->mailbox_tail = prepared;
   slot->mailbox_length++;
+  slot->mailbox_bytes += encoded_bytes;
   increment_counter(&scheduler->messages_sent);
   scheduler->mailbox_messages++;
+  scheduler->mailbox_bytes += encoded_bytes;
   if (slot->lifecycle == CAML_ACTOR_LIFECYCLE_BLOCKED) {
     slot->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNABLE;
     enqueue_tail(scheduler, prepared->target_index);
@@ -1197,8 +1267,12 @@ int caml_actor_scheduler_consume_current_message(
   slot->mailbox_head = message->next;
   if (slot->mailbox_head == NULL) slot->mailbox_tail = NULL;
   slot->mailbox_length--;
+  CAMLassert(slot->mailbox_bytes >= message->encoded_bytes);
+  slot->mailbox_bytes -= message->encoded_bytes;
   increment_counter(&scheduler->messages_received);
   scheduler->mailbox_messages--;
+  CAMLassert(scheduler->mailbox_bytes >= message->encoded_bytes);
+  scheduler->mailbox_bytes -= message->encoded_bytes;
   caml_actor_wire_destroy(message->envelope);
   free(message);
 #ifdef DEBUG
@@ -1244,6 +1318,8 @@ int caml_actor_scheduler_stats(
   stats->messages_received = scheduler->messages_received;
   stats->messages_dropped = scheduler->messages_dropped;
   stats->mailbox_messages = scheduler->mailbox_messages;
+  stats->mailbox_bytes = scheduler->mailbox_bytes;
+  stats->mailbox_quota_failures = scheduler->mailbox_quota_failures;
 
   for (uintnat index = 0; index < scheduler->capacity; index++) {
     const struct caml_actor_slot *slot = &scheduler->slots[index];
@@ -1285,8 +1361,10 @@ int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,
   slot = &scheduler->slots[index];
   CAMLassert(!slot->queued);
   CAMLassert(scheduler->mailbox_messages >= slot->mailbox_length);
+  CAMLassert(scheduler->mailbox_bytes >= slot->mailbox_bytes);
   add_counter(&scheduler->messages_dropped, slot->mailbox_length);
   scheduler->mailbox_messages -= slot->mailbox_length;
+  scheduler->mailbox_bytes -= slot->mailbox_bytes;
   release_slot_resources(slot);
   slot->failure = CAML_ACTOR_FAILURE_NONE;
   slot->pid = 0;

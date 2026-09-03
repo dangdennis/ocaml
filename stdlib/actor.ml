@@ -36,6 +36,8 @@ type world_config = {
   max_actors : int;
   reductions_per_slice : int;
   max_message_words : int;
+  max_mailbox_messages : int;
+  max_mailbox_bytes : int;
 }
 
 let default_world_config = {
@@ -44,6 +46,8 @@ let default_world_config = {
   max_actors = 1_024;
   reductions_per_slice = 1_000;
   max_message_words = 1 lsl 16;
+  max_mailbox_messages = 1 lsl 16;
+  max_mailbox_bytes = 1 lsl 28;
 }
 
 type run_error =
@@ -92,7 +96,8 @@ let run_with_heap_limits ~root ~child entry =
      child.initial_words, child.maximum_words, entry)
 
 type configured_run_request =
-  int * int * int * int * int * int * int * (unit inbox -> unit)
+  int * int * int * int * int * int * int * int * int *
+  (unit inbox -> unit)
 
 external configured_run_request : configured_run_request ->
   (unit, run_error) result
@@ -103,7 +108,8 @@ let run_with_config config entry =
     (config.root_heap.initial_words, config.root_heap.maximum_words,
      config.child_heap.initial_words, config.child_heap.maximum_words,
      config.max_actors, config.reductions_per_slice,
-     config.max_message_words, entry)
+     config.max_message_words, config.max_mailbox_messages,
+     config.max_mailbox_bytes, entry)
 
 type 'message spawn_request =
   int * int * ('message inbox -> unit)

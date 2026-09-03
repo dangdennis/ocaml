@@ -249,7 +249,7 @@ until the configuration API and spawn-copy path are wired and tested.
 - [x] Add per-spawn heap overrides bounded by the configured child maximum.
 - [x] Configure actor count, reductions, and message graph/serialization work
       with validated finite defaults owned by the actor world.
-- [ ] Enforce mailbox message and byte quotas transactionally.
+- [x] Enforce mailbox message and byte quotas transactionally.
 - [ ] Expose current capacity, maximums, growth, and quota failures through
       deterministic observability.
 - [ ] Pass the full local, sanitizer, package, benchmark, hygiene, and fresh
