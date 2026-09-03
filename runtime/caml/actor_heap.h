@@ -77,6 +77,8 @@ CAMLextern int caml_actor_heap_owns_value(
   const struct caml_actor_heap *heap, value value);
 CAMLextern int caml_actor_heap_contains_address(value candidate);
 CAMLextern int caml_actor_heap_value_is_storable(value candidate);
+CAMLextern int caml_actor_string_is_readable(value string);
+CAMLextern value caml_actor_alloc_string(mlsize_t length);
 CAMLextern uintnat caml_actor_heap_owner(
   const struct caml_actor_heap *heap);
 CAMLextern mlsize_t caml_actor_heap_quota_words(

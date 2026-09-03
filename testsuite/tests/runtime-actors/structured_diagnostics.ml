@@ -10,7 +10,7 @@ external denied_primitive : unit -> string * int = "caml_sys_get_config"
 external denied_primitive2 : int -> int -> int = "caml_int64_add"
 external denied_primitive3 : int -> int -> int -> unit
   = "caml_obj_set_raw_field"
-external denied_primitive4 : int -> int -> int -> int -> int = "caml_hash"
+external denied_primitive4 : int -> int -> int -> int -> int = "caml_ml_input"
 external denied_primitive5 : int -> int -> int -> int -> int -> unit
   = "caml_blit_bytes"
 
@@ -34,7 +34,7 @@ let () =
     "unsupported primitive caml_obj_set_raw_field/3"
     (Actor.run (fun _ -> denied_primitive3 0 0 0));
   expect_root_failure
-    "unsupported primitive caml_hash/4"
+    "unsupported primitive caml_ml_input/4"
     (Actor.run (fun _ -> ignore (denied_primitive4 0 0 0 0)));
   expect_root_failure
     "unsupported primitive caml_blit_bytes/5"
