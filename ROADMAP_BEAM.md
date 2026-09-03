@@ -205,6 +205,59 @@ Allocation failure must remain actor-local and deterministic. Heap growth must
 not introduce shared ownership or allow a collection to inspect another
 actor's heap.
 
+### Design boundary
+
+Each actor reserves a guarded address range for its maximum heap, but commits
+only the pages needed by its current logical capacity. Allocation pressure
+first runs an ordinary copying collection. The heap grows geometrically only
+when the surviving graph plus the requested block still does not fit. Growth
+commits both semispaces and replaces collector metadata before any root is
+rewritten; a preparation failure therefore leaves the current heap usable.
+
+The existing internal heap constructor remains a fixed-size compatibility
+wrapper with `initial = maximum`. Public actors do not use elastic defaults
+until the configuration API and spawn-copy path are wired and tested.
+
+### Work sequence
+
+1. Separate current capacity from the lifetime maximum in the actor heap.
+2. Thread initial and maximum heap sizes through root and child preparation.
+3. Add validated public world and spawn configuration without changing the
+   behavior of `Actor.run` or `Actor.spawn` defaults.
+4. Move actor count, reductions, and message graph limits out of hard-coded
+   runtime constants and into the world configuration.
+5. Add transactional mailbox message and byte quotas with observable counters.
+6. Re-run the full Layer 10 compatibility, sanitizer, benchmark, and package
+   gates before publishing the completed layer.
+
+### Milestone tracker
+
+- [x] Add red seam coverage for initial capacity, collection-before-growth,
+      live-root relocation, geometric growth, compatibility construction, and
+      deterministic maximum exhaustion.
+- [x] Reserve the maximum guarded range while committing and allocating
+      metadata only for the current capacity.
+- [x] Grow collector metadata and both semispaces transactionally before root
+      rewriting.
+- [x] Pass the normal, debug, and instrumented actor suites for the internal
+      heap slice: 23 passed and one expected platform skip in each runtime.
+- [ ] Thread separate initial and maximum sizes through root closure copying,
+      child closure copying, and scheduler slot preparation.
+- [ ] Add public validated world configuration and preserve existing defaults.
+- [ ] Add per-spawn heap overrides bounded by the world maximum.
+- [ ] Configure actor count, reductions, and message graph/serialization work.
+- [ ] Enforce mailbox message and byte quotas transactionally.
+- [ ] Expose current capacity, maximums, growth, and quota failures through
+      deterministic observability.
+- [ ] Pass the full local, sanitizer, package, benchmark, hygiene, and fresh
+      runner gates and publish the stacked Layer 11 draft.
+
+### Current next action
+
+Write red scheduler and public-API tests for distinct root and child initial
+and maximum heap sizes, then thread the values through transactional closure
+copying without weakening the fixed-size compatibility entry points.
+
 ## Layer 12: structured exits and monitors
 
 Introduce pointer-free structured exit reasons, bytecode backtrace data,
