@@ -55,7 +55,7 @@ part of the current roadmap.
 | Actor MVP 0-7 | `actor-mvp/*`, PRs #1-#10 | Published as a stacked draft implementation |
 | Layer 8: compatibility and observability baseline | `actor-real/08-contract-observability-baseline`, PR #11 | Published draft |
 | Layer 9: frozen global reads | `actor-real/09-frozen-global-reads`, PR #12 | Published draft and Layer 10 base |
-| Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | Implementation complete; final validation in progress |
+| Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | Complete and published as a stacked draft |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -153,14 +153,23 @@ Layer 10.
       mailboxes as receiver-owned copies.
 - [x] Compile and run the pinned pure-OCaml Astring package canary.
 - [x] Open stacked draft PR #13 against the exact Layer 9 remote tip.
-- [ ] Pass the final full Layer 10 local and fresh-runner gates.
+- [x] Pass the final full Layer 10 local and fresh-runner gates.
+
+### Validation checkpoint
+
+Layer 10 closed at implementation tip `8f525f8b72`. The local normal, debug,
+and instrumented actor suites each passed 22 tests with one expected platform
+skip. The tooling suites, benchmark smoke, package canary, and relevant
+callback, backtrace, and effects bytecode suites passed. Fresh-runner Actor
+Runtime (`33714404485`), Hygiene (`33714404446`), full Build
+(`33714400722`), and MSVC (`33714404492`) workflows passed at that exact tip.
 
 ### Current next action
 
-Run the complete normal, debug, instrumented, tooling, benchmark, sanitizer,
-upstream-bytecode, and repository-hygiene matrix at the final branch tip. Treat
-the fresh GitHub runner as the publication gate; do not mark Layer 10 complete
-until every required check is green.
+Begin Layer 11 by writing red tests for controlled heap growth and explicit
+initial and maximum per-actor heap limits. Preserve Layer 10's fail-closed
+primitive policy and receiver-owned mailbox-copy boundary while changing heap
+capacity management.
 
 ### Completion gates
 
