@@ -182,7 +182,11 @@ static enum actor_run_outcome root_failure_outcome(
 
 #endif
 
-CAMLprim value caml_actor_run(value root)
+static value actor_run(value root,
+                       mlsize_t root_initial_heap_words,
+                       mlsize_t root_maximum_heap_words,
+                       mlsize_t child_initial_heap_words,
+                       mlsize_t child_maximum_heap_words)
 {
   CAMLparam1(root);
   CAMLlocal3(result, error, message_value);
@@ -218,12 +222,14 @@ CAMLprim value caml_actor_run(value root)
     }
     goto cleanup;
   }
-  scheduler = caml_actor_scheduler_create(
-    ACTOR_MVP_CAPACITY, ACTOR_MVP_REDUCTIONS);
+  scheduler = caml_actor_scheduler_create_configured(
+    ACTOR_MVP_CAPACITY, ACTOR_MVP_REDUCTIONS,
+    child_initial_heap_words, child_maximum_heap_words);
   if (scheduler == NULL) goto cleanup;
 
-  spawn_status = caml_actor_scheduler_prepare_root_closure(
-    scheduler, root, ACTOR_MVP_ROOT_HEAP_WORDS, &prepared);
+  spawn_status = caml_actor_scheduler_prepare_root_closure_sized(
+    scheduler, root, root_initial_heap_words,
+    root_maximum_heap_words, &prepared);
   if (spawn_status != CAML_ACTOR_SPAWN_OK) {
     if (spawn_status == CAML_ACTOR_SPAWN_INITIAL_HEAP_LIMIT) {
       outcome = ACTOR_RUN_ROOT_HEAP_EXHAUSTED;
@@ -329,10 +335,51 @@ finished:
   CAMLreturn(result);
 }
 
-CAMLprim value caml_actor_spawn(value closure)
+CAMLprim value caml_actor_run(value root)
+{
+  CAMLparam1(root);
+  CAMLlocal1(entry);
+  mlsize_t root_initial = ACTOR_MVP_ROOT_HEAP_WORDS;
+  mlsize_t root_maximum = ACTOR_MVP_ROOT_HEAP_WORDS;
+  mlsize_t child_initial = ACTOR_MVP_CHILD_HEAP_WORDS;
+  mlsize_t child_maximum = ACTOR_MVP_CHILD_HEAP_WORDS;
+
+  entry = root;
+  if (Is_block(root) && Tag_val(root) == 0 && Wosize_val(root) == 1) {
+    entry = Field(root, 0);
+  } else if (Is_block(root)
+             && Tag_val(root) == 0 && Wosize_val(root) == 5) {
+    value root_initial_value = Field(root, 0);
+    value root_maximum_value = Field(root, 1);
+    value child_initial_value = Field(root, 2);
+    value child_maximum_value = Field(root, 3);
+
+    if (!Is_long(root_initial_value) || Long_val(root_initial_value) <= 0
+        || !Is_long(root_maximum_value)
+        || Long_val(root_maximum_value) < Long_val(root_initial_value)
+        || !Is_long(child_initial_value) || Long_val(child_initial_value) <= 0
+        || !Is_long(child_maximum_value)
+        || Long_val(child_maximum_value) < Long_val(child_initial_value)) {
+      caml_invalid_argument("Actor.run_with_heap_limits");
+    }
+    root_initial = Long_val(root_initial_value);
+    root_maximum = Long_val(root_maximum_value);
+    child_initial = Long_val(child_initial_value);
+    child_maximum = Long_val(child_maximum_value);
+    entry = Field(root, 4);
+  }
+  CAMLreturn(actor_run(
+    entry, root_initial, root_maximum, child_initial, child_maximum));
+}
+
+static value actor_spawn(value closure, mlsize_t initial_heap_words,
+                         mlsize_t maximum_heap_words, int use_default)
 {
 #if defined(NATIVE_CODE)
   (void)closure;
+  (void)initial_heap_words;
+  (void)maximum_heap_words;
+  (void)use_default;
   caml_invalid_argument("Actor.spawn outside an actor world");
 #else
   struct caml_actor_scheduler *scheduler;
@@ -345,8 +392,12 @@ CAMLprim value caml_actor_spawn(value closure)
     caml_invalid_argument("Actor.spawn outside an actor world");
   }
   scheduler = Caml_state->actor_scheduler;
-  status = caml_actor_scheduler_prepare_closure(
-    scheduler, closure, ACTOR_MVP_CHILD_HEAP_WORDS, &prepared);
+  status = use_default
+    ? caml_actor_scheduler_prepare_closure_default(
+        scheduler, closure, &prepared)
+    : caml_actor_scheduler_prepare_closure_sized(
+        scheduler, closure, initial_heap_words,
+        maximum_heap_words, &prepared);
   if (status != CAML_ACTOR_SPAWN_OK) return actor_spawn_error(status);
 
   pid = caml_actor_scheduler_prepared_pid(prepared);
@@ -360,6 +411,47 @@ CAMLprim value caml_actor_spawn(value closure)
     return Val_unit;
   }
   return result;
+#endif
+}
+
+CAMLprim value caml_actor_spawn(value request)
+{
+#if defined(NATIVE_CODE)
+  return actor_spawn(request, 0, 0, 1);
+#else
+  struct caml_actor_heap *heap;
+  value closure = request;
+  value initial = Val_unit;
+  value maximum = Val_unit;
+  int use_default = 1;
+
+  if (!caml_actor_scheduler_is_running()) {
+    caml_invalid_argument("Actor.spawn outside an actor world");
+  }
+  heap = caml_actor_heap_current();
+  if (caml_actor_heap_owns_value(heap, request)
+      && Tag_val(request) == 0 && Wosize_val(request) == 1) {
+    if (!caml_actor_heap_read_field(request, 0, &closure)) {
+      caml_actor_scheduler_request_unsupported();
+      return Val_unit;
+    }
+  } else if (caml_actor_heap_owns_value(heap, request)
+             && Tag_val(request) == 0 && Wosize_val(request) == 3) {
+    if (!caml_actor_heap_read_field(request, 0, &initial)
+        || !caml_actor_heap_read_field(request, 1, &maximum)
+        || !caml_actor_heap_read_field(request, 2, &closure)) {
+      caml_actor_scheduler_request_unsupported();
+      return Val_unit;
+    }
+    use_default = 0;
+  }
+  if (use_default) return actor_spawn(closure, 0, 0, 1);
+  if (!Is_long(initial) || Long_val(initial) <= 0
+      || !Is_long(maximum) || Long_val(maximum) < Long_val(initial)) {
+    return actor_spawn_error(CAML_ACTOR_SPAWN_INITIAL_HEAP_LIMIT);
+  }
+  return actor_spawn(
+    closure, Long_val(initial), Long_val(maximum), 0);
 #endif
 }
 

@@ -80,6 +80,63 @@ let check_root_exception () =
   | Error (Actor.Root_failed _) -> ()
   | _ -> assert false
 
+let rec retain_live count tail =
+  if count = 0 then tail else retain_live (count - 1) (count :: tail)
+
+let elastic_root = Actor.{ initial_words = 64; maximum_words = 8_192 }
+let elastic_child = Actor.{ initial_words = 64; maximum_words = 4_096 }
+let tiny_child = Actor.{ initial_words = 64; maximum_words = 128 }
+let oversized_child = Actor.{ initial_words = 64; maximum_words = 8_192 }
+let invalid_heap = Actor.{ initial_words = 0; maximum_words = 128 }
+
+let check_elastic_heap_limits () =
+  require_ok
+    (Actor.run_with_heap_limits ~root:elastic_root ~child:elastic_child
+       (fun root_inbox ->
+         let root = Actor.self root_inbox in
+         let live = retain_live 1_000 [] in
+         if List.length live <> 1_000 then ignore (1 / 0);
+         begin match Actor.spawn (fun _ ->
+           let child_live = retain_live 600 [] in
+           if List.length child_live <> 600 then ignore (1 / 0);
+           ignore (Actor.send root ())) with
+         | Error _ -> ignore (1 / 0)
+         | Ok _ -> ignore (Actor.receive root_inbox)
+         end));
+  require_ok
+    (Actor.run_with_heap_limits ~root:elastic_root ~child:elastic_child
+       (fun _ ->
+         begin match Actor.spawn_with_heap_limits tiny_child (fun _ ->
+           ignore (retain_live 1_000 [])) with
+         | Error _ -> ignore (1 / 0)
+         | Ok _ -> Actor.yield ()
+         end;
+         if (Actor.stats ()).total_failed <> 1 then ignore (1 / 0);
+         match Actor.spawn_with_heap_limits invalid_heap (fun _ -> ()) with
+         | Error Actor.Initial_heap_limit ->
+             begin match
+               Actor.spawn_with_heap_limits oversized_child (fun _ -> ())
+             with
+             | Error Actor.Initial_heap_limit -> ()
+             | _ -> ignore (1 / 0)
+             end
+         | _ -> ignore (1 / 0)));
+  begin match
+    Actor.run_with_heap_limits ~root:tiny_child ~child:elastic_child
+      (fun _ -> ignore (retain_live 1_000 []))
+  with
+  | Error Actor.Root_heap_exhausted -> ()
+  | _ -> assert false
+  end;
+  begin
+    try
+      ignore
+        (Actor.run_with_heap_limits ~root:invalid_heap ~child:elastic_child
+           (fun _ -> ()));
+      assert false
+    with Invalid_argument _ -> ()
+  end
+
 let () =
   check_entry_copy_and_cleanup ();
   print_endline "public actor entry: ok";
@@ -93,4 +150,6 @@ let () =
   print_endline "capture rejection: ok";
   check_initial_heap_limit ();
   check_root_exception ();
-  print_endline "public actor failures: ok"
+  print_endline "public actor failures: ok";
+  check_elastic_heap_limits ();
+  print_endline "elastic heap limits: ok"

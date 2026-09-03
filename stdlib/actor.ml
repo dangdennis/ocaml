@@ -15,6 +15,21 @@
 type 'message pid = int
 type 'message inbox = int
 
+type heap_limits = {
+  initial_words : int;
+  maximum_words : int;
+}
+
+let default_root_heap_limits = {
+  initial_words = 1 lsl 18;
+  maximum_words = 1 lsl 18;
+}
+
+let default_child_heap_limits = {
+  initial_words = 1 lsl 16;
+  maximum_words = 1 lsl 16;
+}
+
 type run_error =
   | Unsupported_runtime
   | Root_failed of string
@@ -46,12 +61,34 @@ type stats = {
   mailbox_messages : int;
 }
 
+type run_request =
+  int * int * int * int * (unit inbox -> unit)
+
+external run_request : run_request -> (unit, run_error) result
+  = "caml_actor_run"
+
 external run : (unit inbox -> unit) -> (unit, run_error) result
   = "caml_actor_run"
+
+let run_with_heap_limits ~root ~child entry =
+  run_request
+    (root.initial_words, root.maximum_words,
+     child.initial_words, child.maximum_words, entry)
+
+type 'message spawn_request =
+  int * int * ('message inbox -> unit)
+
+external spawn_request : 'message spawn_request ->
+  ('message pid, spawn_error) result
+  = "caml_actor_spawn"
 
 external spawn : ('message inbox -> unit) ->
   ('message pid, spawn_error) result
   = "caml_actor_spawn"
+
+let spawn_with_heap_limits limits entry =
+  spawn_request
+    (limits.initial_words, limits.maximum_words, entry)
 
 external self : 'message inbox -> 'message pid
   = "caml_actor_self"

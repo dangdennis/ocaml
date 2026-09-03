@@ -26,6 +26,14 @@ module Actor : sig
   type 'message pid
   type 'message inbox
 
+  type heap_limits = {
+    initial_words : int;
+    maximum_words : int;
+  }
+
+  val default_root_heap_limits : heap_limits
+  val default_child_heap_limits : heap_limits
+
   type run_error =
     | Unsupported_runtime
     | Root_failed of string
@@ -58,8 +66,13 @@ module Actor : sig
   }
 
   val run : (unit inbox -> unit) -> (unit, run_error) result
+  val run_with_heap_limits :
+    root:heap_limits -> child:heap_limits ->
+    (unit inbox -> unit) -> (unit, run_error) result
   val spawn : ('message inbox -> unit) ->
     ('message pid, spawn_error) result
+  val spawn_with_heap_limits : heap_limits ->
+    ('message inbox -> unit) -> ('message pid, spawn_error) result
   val self : 'message inbox -> 'message pid
   val send : 'message pid -> 'message -> (unit, send_error) result
   val receive : 'message inbox -> 'message
@@ -77,6 +90,21 @@ never escape through an error.
 saturate at `max_int`; `runnable_actors` includes the actor taking the
 snapshot, and `messages_dropped` counts unread envelopes discarded at actor
 retirement.
+
+Layer 11 adds elastic private heaps without changing the behavior of `run` or
+`spawn`: their default initial and maximum sizes remain equal. A configured
+heap reserves a guarded maximum address range, commits only its current pages,
+collects before growing, and doubles logical capacity only when live data plus
+the requested allocation still does not fit. A root or child entry graph may
+raise the actual starting capacity above the requested initial size, but never
+above the configured maximum.
+
+`run_with_heap_limits` validates both limit pairs before freezing the actor
+world. `spawn_with_heap_limits` returns `Initial_heap_limit` for an invalid
+pair or for a per-spawn maximum above the world's configured child maximum.
+Both entry points reuse the established `caml_actor_run/1` and
+`caml_actor_spawn/1` primitive names so the boot runtime can still load the
+rebuilt standard library and compiler.
 
 ## Execution semantics
 
