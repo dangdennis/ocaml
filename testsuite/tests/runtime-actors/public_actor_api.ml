@@ -137,6 +137,84 @@ let check_elastic_heap_limits () =
     with Invalid_argument _ -> ()
   end
 
+let config_with_limits ~max_actors ~reductions_per_slice ~max_message_words =
+  Actor.{
+    Actor.default_world_config with
+    max_actors;
+    reductions_per_slice;
+    max_message_words;
+  }
+
+let expect_invalid_config config =
+  try
+    ignore (Actor.run_with_config config (fun _ -> ()));
+    assert false
+  with Invalid_argument _ -> ()
+
+let check_world_config () =
+  assert (Actor.default_world_config.root_heap =
+          Actor.default_root_heap_limits);
+  assert (Actor.default_world_config.child_heap =
+          Actor.default_child_heap_limits);
+  assert (Actor.default_world_config.max_actors = 1_024);
+  assert (Actor.default_world_config.reductions_per_slice = 1_000);
+  assert (Actor.default_world_config.max_message_words = 1 lsl 16);
+  let actor_limited =
+    config_with_limits ~max_actors:2 ~reductions_per_slice:1_000
+      ~max_message_words:(1 lsl 16)
+  in
+  require_ok (Actor.run_with_config actor_limited (fun _ ->
+    begin match Actor.spawn (fun _ -> Actor.yield ()) with
+    | Error _ -> ignore (1 / 0)
+    | Ok _ -> ()
+    end;
+    match Actor.spawn (fun _ -> ()) with
+    | Error Actor.Actor_limit -> ()
+    | _ -> ignore (1 / 0)));
+  let short_slices =
+    config_with_limits ~max_actors:2 ~reductions_per_slice:1
+      ~max_message_words:(1 lsl 16)
+  in
+  require_ok (Actor.run_with_config short_slices (fun _ ->
+    if (Actor.stats ()).total_reduction_stops = 0 then ignore (1 / 0)));
+  let long_slices =
+    config_with_limits ~max_actors:2 ~reductions_per_slice:100_000
+      ~max_message_words:(1 lsl 16)
+  in
+  require_ok (Actor.run_with_config long_slices (fun _ ->
+    if (Actor.stats ()).total_reduction_stops <> 0 then ignore (1 / 0)));
+  let message_limited =
+    config_with_limits ~max_actors:2 ~reductions_per_slice:1_000
+      ~max_message_words:1
+  in
+  require_ok (Actor.run_with_config message_limited (fun root_inbox ->
+    match Actor.spawn (fun inbox -> ignore (Actor.receive inbox)) with
+    | Error _ -> ignore (1 / 0)
+    | Ok child ->
+        begin match Actor.send child [0] with
+        | Error Actor.Message_too_large -> ()
+        | _ -> ignore (1 / 0)
+        end;
+        begin match Actor.send child [] with
+        | Ok () -> ()
+        | Error _ -> ignore (1 / 0)
+        end;
+        ignore root_inbox));
+  expect_invalid_config
+    (config_with_limits ~max_actors:1 ~reductions_per_slice:1_000
+       ~max_message_words:(1 lsl 16));
+  expect_invalid_config
+    (config_with_limits ~max_actors:65_537 ~reductions_per_slice:1_000
+       ~max_message_words:(1 lsl 16));
+  expect_invalid_config
+    (config_with_limits ~max_actors:2 ~reductions_per_slice:0
+       ~max_message_words:(1 lsl 16));
+  expect_invalid_config
+    (config_with_limits ~max_actors:2 ~reductions_per_slice:1_000
+       ~max_message_words:0);
+  expect_invalid_config
+    Actor.{ Actor.default_world_config with root_heap = invalid_heap }
+
 let () =
   check_entry_copy_and_cleanup ();
   print_endline "public actor entry: ok";
@@ -152,4 +230,6 @@ let () =
   check_root_exception ();
   print_endline "public actor failures: ok";
   check_elastic_heap_limits ();
-  print_endline "elastic heap limits: ok"
+  print_endline "elastic heap limits: ok";
+  check_world_config ();
+  print_endline "world configuration: ok"
