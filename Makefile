@@ -2510,6 +2510,13 @@ tools/actor_primitive_policy.ml: \
   runtime/actor_primitive_policy.def tools/gen_actor_primitive_policy.sh
 	$(V_GEN)$(SHELL) tools/gen_actor_primitive_policy.sh $< > $@
 
+# actor_primitive_policy.ml is generated after the checked-in dependency file,
+# so record the interface edges explicitly for parallel bootstrap builds.
+tools/actor_primitive_policy.cmo tools/actor_primitive_policy.cmx: \
+  tools/actor_primitive_policy.cmi
+tools/ocamlactorcheck.cmo tools/ocamlactorcheck.cmx: \
+  tools/actor_primitive_policy.cmi
+
 clean::
 	rm -f tools/actor_primitive_policy.ml
 
