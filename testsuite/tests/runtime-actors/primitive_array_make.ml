@@ -20,16 +20,16 @@
 (*                                                                        *)
 (**************************************************************************)
 
-let require_ok = function
+let require_ok stage = function
   | Ok () -> ()
-  | Error Actor.Unsupported_runtime -> failwith "unsupported runtime"
-  | Error Actor.Root_heap_exhausted -> failwith "root heap exhausted"
-  | Error Actor.Deadlock -> failwith "deadlock"
-  | Error (Actor.Root_failed message) -> failwith message
+  | Error Actor.Unsupported_runtime -> failwith (stage ^ ": unsupported runtime")
+  | Error Actor.Root_heap_exhausted -> failwith (stage ^ ": root heap exhausted")
+  | Error Actor.Deadlock -> failwith (stage ^ ": deadlock")
+  | Error (Actor.Root_failed message) -> failwith (stage ^ ": " ^ message)
 
 let frozen_destination = [| 41; 42; 43 |]
 
-let root _inbox =
+let construction_root _inbox =
   assert (Array.length (Array.make 0 1) = 0);
   let initial = ref 7 in
   let values = Array.make 1024 initial in
@@ -46,6 +46,10 @@ let root _inbox =
   in
   assert bounds_rejected;
 
+  Actor.yield ();
+  assert (!(values.(511)) = 11)
+
+let operations_root _inbox =
   let source = [| 1; 2; 3; 4 |] in
   let destination = Array.make 5 0 in
   Array.blit source 1 destination 0 3;
@@ -67,8 +71,9 @@ let root _inbox =
   assert (destination.(3) = 9);
   assert (destination.(4) = 9);
   Array.unsafe_set destination 4 12;
-  assert (Array.unsafe_get destination 4 = 12);
+  assert (Array.unsafe_get destination 4 = 12)
 
+let frozen_root _inbox =
   let set_frozen_rejected =
     try
       frozen_destination.(0) <- 0;
@@ -82,20 +87,22 @@ let root _inbox =
       false
     with Invalid_argument _ -> true
   in
-  assert fill_frozen_rejected;
+  assert fill_frozen_rejected
 
+let stdlib_root _inbox =
   let table = Hashtbl.create ~random:false 31 in
   assert (Hashtbl.length table = 0);
 
   for round = 1 to 400 do
     let moving = Array.make 512 round in
     assert (moving.(round land 511) = round)
-  done;
-  Actor.yield ();
-  assert (!(values.(511)) = 11)
+  done
 
 let () =
-  require_ok (Actor.run root);
+  require_ok "construction" (Actor.run construction_root);
+  require_ok "operations" (Actor.run operations_root);
+  require_ok "frozen rejection" (Actor.run frozen_root);
+  require_ok "stdlib and GC" (Actor.run stdlib_root);
   assert (frozen_destination.(0) = 41);
   assert (frozen_destination.(1) = 42);
   begin match Actor.run (fun _ -> ignore (Array.make 270_000 0)) with
