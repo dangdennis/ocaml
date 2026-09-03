@@ -27,6 +27,16 @@ type 'message pid
 type 'message inbox
 (** The identity capability supplied to an actor entry function. *)
 
+type heap_limits = {
+  initial_words : int;
+  maximum_words : int;
+}
+(** Actor-private heap capacity in machine words. The initial value must be
+    positive and no greater than the maximum. *)
+
+val default_root_heap_limits : heap_limits
+val default_child_heap_limits : heap_limits
+
 type run_error =
   | Unsupported_runtime
   | Root_failed of string
@@ -67,11 +77,23 @@ external run : (unit inbox -> unit) -> (unit, run_error) result
 (** [run root] suspends the host computation and runs [root] as actor zero.
     The host computation resumes only after the actor world has been retired. *)
 
+val run_with_heap_limits :
+  root:heap_limits -> child:heap_limits ->
+  (unit inbox -> unit) -> (unit, run_error) result
+(** [run_with_heap_limits ~root ~child entry] uses elastic heaps for the root
+    and for children created by {!spawn}. It raises [Invalid_argument] before
+    entering the actor world when either limit pair is invalid. *)
+
 external spawn : ('message inbox -> unit) ->
   ('message pid, spawn_error) result
   = "caml_actor_spawn"
 (** [spawn entry] copies [entry] and its supported captured graph into a new
     actor, returning its identity after the child is published. *)
+
+val spawn_with_heap_limits : heap_limits -> ('message inbox -> unit) ->
+  ('message pid, spawn_error) result
+(** [spawn_with_heap_limits limits entry] overrides the configured child heap
+    limits for one spawn. Invalid limits return [Error Initial_heap_limit]. *)
 
 external self : 'message inbox -> 'message pid
   = "caml_actor_self"

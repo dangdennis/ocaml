@@ -141,6 +141,8 @@ struct caml_actor_scheduler {
   int domain_unique_id;
   uintnat capacity;
   uintnat reduction_budget;
+  mlsize_t child_initial_heap_words;
+  mlsize_t child_maximum_heap_words;
   struct caml_actor_slot *slots;
   uint32_t ready_head;
   uint32_t ready_tail;
@@ -438,8 +440,9 @@ static int scheduler_mailboxes_valid(
 }
 #endif
 
-struct caml_actor_scheduler *caml_actor_scheduler_create(
-  uintnat capacity, uintnat reduction_budget)
+struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
+  uintnat capacity, uintnat reduction_budget,
+  mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words)
 {
   caml_domain_state *domain = Caml_state_opt;
   struct caml_actor_scheduler *scheduler;
@@ -451,6 +454,8 @@ struct caml_actor_scheduler *caml_actor_scheduler_create(
       || domain->gc_regs != NULL || caml_debugger_in_use
       || capacity < 2 || capacity > CAML_ACTOR_PID_INDEX_MASK + 1
       || reduction_budget == 0
+      || child_initial_heap_words == 0
+      || child_initial_heap_words > child_maximum_heap_words
       || capacity > SIZE_MAX / sizeof(*slots)) {
     return NULL;
   }
@@ -467,6 +472,8 @@ struct caml_actor_scheduler *caml_actor_scheduler_create(
   scheduler->domain_unique_id = domain->unique_id;
   scheduler->capacity = capacity;
   scheduler->reduction_budget = reduction_budget;
+  scheduler->child_initial_heap_words = child_initial_heap_words;
+  scheduler->child_maximum_heap_words = child_maximum_heap_words;
   scheduler->slots = slots;
   scheduler->ready_head = ACTOR_SLOT_NONE;
   scheduler->ready_tail = ACTOR_SLOT_NONE;
@@ -488,6 +495,13 @@ struct caml_actor_scheduler *caml_actor_scheduler_create(
   }
   domain->actor_scheduler = scheduler;
   return scheduler;
+}
+
+struct caml_actor_scheduler *caml_actor_scheduler_create(
+  uintnat capacity, uintnat reduction_budget)
+{
+  return caml_actor_scheduler_create_configured(
+    capacity, reduction_budget, 1, 1);
 }
 
 void caml_actor_scheduler_destroy(struct caml_actor_scheduler *scheduler)
@@ -786,8 +800,23 @@ enum caml_actor_spawn_status caml_actor_scheduler_prepare_closure_sized(
   mlsize_t initial_heap_words, mlsize_t maximum_heap_words,
   struct caml_actor_prepared_spawn **prepared)
 {
+  if (scheduler == NULL
+      || maximum_heap_words > scheduler->child_maximum_heap_words) {
+    return CAML_ACTOR_SPAWN_INITIAL_HEAP_LIMIT;
+  }
   return prepare_closure(
     scheduler, 0, closure, initial_heap_words, maximum_heap_words, prepared);
+}
+
+enum caml_actor_spawn_status
+caml_actor_scheduler_prepare_closure_default(
+  struct caml_actor_scheduler *scheduler, value closure,
+  struct caml_actor_prepared_spawn **prepared)
+{
+  if (scheduler == NULL) return CAML_ACTOR_SPAWN_UNSUPPORTED;
+  return prepare_closure(
+    scheduler, 0, closure, scheduler->child_initial_heap_words,
+    scheduler->child_maximum_heap_words, prepared);
 }
 
 uintnat caml_actor_scheduler_prepared_pid(
