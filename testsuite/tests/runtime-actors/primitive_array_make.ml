@@ -27,6 +27,8 @@ let require_ok = function
   | Error Actor.Deadlock -> failwith "deadlock"
   | Error (Actor.Root_failed message) -> failwith message
 
+let frozen_destination = [| 41; 42; 43 |]
+
 let root _inbox =
   assert (Array.length (Array.make 0 1) = 0);
   let initial = ref 7 in
@@ -67,6 +69,21 @@ let root _inbox =
   Array.unsafe_set destination 4 12;
   assert (Array.unsafe_get destination 4 = 12);
 
+  let set_frozen_rejected =
+    try
+      frozen_destination.(0) <- 0;
+      false
+    with Invalid_argument _ -> true
+  in
+  assert set_frozen_rejected;
+  let fill_frozen_rejected =
+    try
+      Array.fill frozen_destination 0 2 0;
+      false
+    with Invalid_argument _ -> true
+  in
+  assert fill_frozen_rejected;
+
   let table = Hashtbl.create ~random:false 31 in
   assert (Hashtbl.length table = 0);
 
@@ -79,6 +96,8 @@ let root _inbox =
 
 let () =
   require_ok (Actor.run root);
+  assert (frozen_destination.(0) = 41);
+  assert (frozen_destination.(1) = 42);
   begin match Actor.run (fun _ -> ignore (Array.make 270_000 0)) with
   | Error Actor.Root_heap_exhausted -> ()
   | _ -> failwith "array allocation escaped the actor heap limit"
