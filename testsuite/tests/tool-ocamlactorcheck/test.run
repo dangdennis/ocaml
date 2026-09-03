@@ -35,6 +35,20 @@ if sh "${generator}" "${bad_policy}" >/dev/null 2>&1; then
   echo "missing primitive audit unexpectedly accepted" >> "${output}"
   exit 1
 fi
+printf '%s\n' \
+  'ACTOR_PRIMITIVE("mismatch", other, 1, PURE, test, "audit")' \
+  > "${bad_policy}"
+if sh "${generator}" "${bad_policy}" >/dev/null 2>&1; then
+  echo "primitive function mismatch unexpectedly accepted" >> "${output}"
+  exit 1
+fi
+printf '%s\n' \
+  'ACTOR_PRIMITIVE("forbidden", forbidden, 1, FORBIDDEN, test, "audit")' \
+  > "${bad_policy}"
+if sh "${generator}" "${bad_policy}" >/dev/null 2>&1; then
+  echo "forbidden primitive function unexpectedly accepted" >> "${output}"
+  exit 1
+fi
 
 fixture=actorcheck-fixture.byte
 malformed_code=actorcheck-malformed-code.byte
