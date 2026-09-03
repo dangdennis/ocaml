@@ -213,9 +213,9 @@ OCaml 5.5.0 (19 June 2026)
   heaps, deterministic scheduling, typed mailboxes, failure containment,
   runtime statistics, validated read-only access to frozen module globals,
   a fail-closed primitive capability policy, audited actor-local Stdlib
-  slices, receiver-owned mailbox copies of approved frozen graphs, an Astring
-  package canary, an advisory bytecode-inventory checker, and an explicit
-  unsupported-operation boundary.
+  slices, receiver-owned mailbox copies of approved frozen graphs, controlled
+  elastic semispace growth, an Astring package canary, an advisory
+  bytecode-inventory checker, and an explicit unsupported-operation boundary.
   (Dennis Dang)
 
 - #14365: Add an Idle phase to the GC for better performance on small

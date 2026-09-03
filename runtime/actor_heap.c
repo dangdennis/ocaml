@@ -34,12 +34,15 @@ struct caml_actor_heap {
   uintnat owner;
   char *mapping;
   uintnat mapping_bytes;
+  uintnat reserved_space_bytes;
+  uintnat committed_space_bytes;
   value *data_start[2];
   value *data_end[2];
   value *cursor;
   header_t *shadow_headers[2];
   value *forwarding;
   value *worklist;
+  mlsize_t capacity_words;
   mlsize_t quota_words;
   mlsize_t used_words;
   uintnat blocks;
@@ -89,6 +92,7 @@ struct actor_gc_context {
   mlsize_t live_words;
   uintnat live_blocks;
   uintnat work_count;
+  mlsize_t capacity_words;
   int valid;
 };
 
@@ -125,11 +129,8 @@ static void retire_actor_mapping(struct caml_actor_heap *heap)
 #ifdef DEBUG
   struct actor_heap_quarantine_entry *entry =
     &actor_heap_quarantine[actor_heap_quarantine_next];
-  uintnat committed_bytes =
-    (heap->mapping_bytes - 3 * caml_plat_pagesize) / 2;
-
-  caml_mem_decommit(heap->data_start[0], committed_bytes);
-  caml_mem_decommit(heap->data_start[1], committed_bytes);
+  caml_mem_decommit(heap->data_start[0], heap->committed_space_bytes);
+  caml_mem_decommit(heap->data_start[1], heap->committed_space_bytes);
   if (actor_heap_quarantine_count == ACTOR_HEAP_QUARANTINE_CAPACITY) {
     caml_mem_unmap(entry->mapping, entry->mapping_bytes);
   } else {
@@ -440,7 +441,7 @@ static value gc_copy_block(struct actor_gc_context *context,
   whsize = Whsize_wosize(wosize);
   if (whsize > (mlsize_t)(
         context->to_cursor - heap->data_start[context->to_space])
-      || context->work_count >= heap->quota_words) {
+      || context->work_count >= context->capacity_words) {
     context->valid = 0;
     return 0;
   }
@@ -504,35 +505,110 @@ static void scan_gc_block(struct actor_gc_context *context, value block)
   }
 }
 
-int caml_actor_heap_collect(struct caml_actor_heap *heap)
+static int actor_heap_prepare_capacity(struct caml_actor_heap *heap,
+                                       mlsize_t capacity_words)
+{
+  header_t *shadow_headers[2] = { NULL, NULL };
+  value *forwarding = NULL;
+  value *worklist = NULL;
+  uintnat committed_bytes;
+  uintnat extra_bytes;
+
+  if (capacity_words <= heap->capacity_words) {
+    return capacity_words == heap->capacity_words;
+  }
+  if (capacity_words > heap->quota_words) return 0;
+
+  for (unsigned space = 0; space < 2; space++) {
+    shadow_headers[space] = calloc(
+      capacity_words, sizeof(*shadow_headers[space]));
+    if (shadow_headers[space] == NULL) goto failed;
+    memcpy(shadow_headers[space], heap->shadow_headers[space],
+           heap->capacity_words * sizeof(*shadow_headers[space]));
+  }
+  forwarding = calloc(capacity_words, sizeof(*forwarding));
+  worklist = calloc(capacity_words, sizeof(*worklist));
+  if (forwarding == NULL || worklist == NULL) goto failed;
+
+  committed_bytes = caml_mem_round_up_pages(Bsize_wsize(capacity_words));
+  if (committed_bytes < Bsize_wsize(capacity_words)
+      || committed_bytes > heap->reserved_space_bytes) {
+    goto failed;
+  }
+  extra_bytes = committed_bytes - heap->committed_space_bytes;
+  if (extra_bytes != 0) {
+    char *first = (char *)heap->data_start[0]
+      + heap->committed_space_bytes;
+    char *second = (char *)heap->data_start[1]
+      + heap->committed_space_bytes;
+
+    if (caml_mem_commit(first, extra_bytes) == NULL) goto failed;
+    if (caml_mem_commit(second, extra_bytes) == NULL) {
+      caml_mem_decommit(first, extra_bytes);
+      goto failed;
+    }
+  }
+
+  for (unsigned space = 0; space < 2; space++) {
+    free(heap->shadow_headers[space]);
+    heap->shadow_headers[space] = shadow_headers[space];
+  }
+  free(heap->forwarding);
+  free(heap->worklist);
+  heap->forwarding = forwarding;
+  heap->worklist = worklist;
+  heap->committed_space_bytes = committed_bytes;
+  return 1;
+
+failed:
+  free(worklist);
+  free(forwarding);
+  free(shadow_headers[1]);
+  free(shadow_headers[0]);
+  return 0;
+}
+
+static int actor_heap_collect_to_capacity(struct caml_actor_heap *heap,
+                                          mlsize_t capacity_words)
 {
   struct caml_actor_heap_verify_result verification;
   struct actor_gc_context context;
   caml_domain_state *domain = Caml_state_opt;
+  value *old_target_end;
 
   if (heap == NULL || domain == NULL || domain->actor_heap != heap
       || !heap->active || !caml_domain_alone()
-      || !caml_actor_world_is_frozen()) {
+      || !caml_actor_world_is_frozen()
+      || capacity_words < heap->capacity_words
+      || capacity_words > heap->quota_words) {
     return 0;
   }
   verification = caml_actor_heap_verify(heap);
   if (verification.error != CAML_ACTOR_HEAP_VERIFY_OK) return 0;
+  if (!actor_heap_prepare_capacity(heap, capacity_words)) return 0;
 
   memset(&context, 0, sizeof(context));
   context.heap = heap;
   context.from_space = heap->active_space;
   context.to_space = 1 - heap->active_space;
+  context.capacity_words = capacity_words;
+  old_target_end = heap->data_end[context.to_space];
+  heap->data_end[context.to_space] =
+    heap->data_start[context.to_space] + capacity_words;
   context.to_cursor = heap->data_end[context.to_space];
   context.valid = 1;
   caml_do_local_roots(
     validate_gc_root, 0, &context,
     domain->local_roots, domain->current_stack, domain->gc_regs);
-  if (!context.valid) return 0;
+  if (!context.valid) {
+    heap->data_end[context.to_space] = old_target_end;
+    return 0;
+  }
 
   memset(heap->shadow_headers[context.to_space], 0,
-         heap->quota_words * sizeof(*heap->shadow_headers[0]));
+         capacity_words * sizeof(*heap->shadow_headers[0]));
   memset(heap->forwarding, 0,
-         heap->quota_words * sizeof(*heap->forwarding));
+         capacity_words * sizeof(*heap->forwarding));
   caml_do_local_roots(
     forward_gc_root, 0, &context,
     domain->local_roots, domain->current_stack, domain->gc_regs);
@@ -545,7 +621,11 @@ int caml_actor_heap_collect(struct caml_actor_heap *heap)
   }
 
   memset(heap->shadow_headers[context.from_space], 0,
-         heap->quota_words * sizeof(*heap->shadow_headers[0]));
+         capacity_words * sizeof(*heap->shadow_headers[0]));
+  for (unsigned space = 0; space < 2; space++) {
+    heap->data_end[space] = heap->data_start[space] + capacity_words;
+  }
+  heap->capacity_words = capacity_words;
   heap->active_space = context.to_space;
   heap->cursor = context.to_cursor;
   heap->used_words = context.live_words;
@@ -565,6 +645,12 @@ int caml_actor_heap_collect(struct caml_actor_heap *heap)
   return 1;
 }
 
+int caml_actor_heap_collect(struct caml_actor_heap *heap)
+{
+  return heap != NULL
+    && actor_heap_collect_to_capacity(heap, heap->capacity_words);
+}
+
 int caml_actor_heap_reserve(struct caml_actor_heap *heap,
                             mlsize_t words)
 {
@@ -573,12 +659,23 @@ int caml_actor_heap_reserve(struct caml_actor_heap *heap,
       || words > heap->quota_words) {
     return 0;
   }
-  if (heap->used_words <= heap->quota_words
-      && words <= heap->quota_words - heap->used_words) {
+  if (heap->used_words <= heap->capacity_words
+      && words <= heap->capacity_words - heap->used_words) {
     return 1;
   }
-  return caml_actor_heap_collect(heap)
-    && words <= heap->quota_words - heap->used_words;
+  if (!caml_actor_heap_collect(heap)) return 0;
+  if (words <= heap->capacity_words - heap->used_words) return 1;
+  if (heap->used_words > heap->quota_words - words) return 0;
+
+  mlsize_t required_words = heap->used_words + words;
+  mlsize_t capacity_words = heap->capacity_words;
+
+  while (capacity_words < required_words) {
+    capacity_words = capacity_words > heap->quota_words - capacity_words
+      ? heap->quota_words : 2 * capacity_words;
+  }
+  return actor_heap_collect_to_capacity(heap, capacity_words)
+    && words <= heap->capacity_words - heap->used_words;
 }
 
 static enum caml_actor_heap_verify_error verify_edge(
@@ -669,12 +766,14 @@ static enum caml_actor_heap_verify_error verify_string(value string,
   return CAML_ACTOR_HEAP_VERIFY_OK;
 }
 
-struct caml_actor_heap *caml_actor_heap_create(uintnat owner,
-                                                mlsize_t quota_words)
+struct caml_actor_heap *caml_actor_heap_create_sized(
+  uintnat owner, mlsize_t initial_words, mlsize_t maximum_words)
 {
   struct caml_actor_heap *heap;
-  uintnat quota_bytes;
+  uintnat initial_bytes;
+  uintnat maximum_bytes;
   uintnat committed_bytes;
+  uintnat reserved_bytes;
   uintnat guards_bytes;
   uintnat mapping_bytes;
   char *mapping;
@@ -684,31 +783,33 @@ struct caml_actor_heap *caml_actor_heap_create(uintnat owner,
 
   if (!actor_runtime_supported()
       || Caml_state_opt == NULL || !caml_domain_alone()
-      || quota_words == 0
-      || mul_overflows_uintnat(quota_words, sizeof(value))
-      || mul_overflows_uintnat(quota_words, sizeof(header_t))) {
+      || initial_words == 0 || initial_words > maximum_words
+      || mul_overflows_uintnat(maximum_words, sizeof(value))
+      || mul_overflows_uintnat(maximum_words, sizeof(header_t))) {
     return NULL;
   }
-  quota_bytes = Bsize_wsize(quota_words);
-  committed_bytes = caml_mem_round_up_pages(quota_bytes);
-  if (committed_bytes < quota_bytes
+  initial_bytes = Bsize_wsize(initial_words);
+  maximum_bytes = Bsize_wsize(maximum_words);
+  committed_bytes = caml_mem_round_up_pages(initial_bytes);
+  reserved_bytes = caml_mem_round_up_pages(maximum_bytes);
+  if (committed_bytes < initial_bytes || reserved_bytes < maximum_bytes
       || mul_overflows_uintnat(3, caml_plat_pagesize)
-      || mul_overflows_uintnat(2, committed_bytes)) {
+      || mul_overflows_uintnat(2, reserved_bytes)) {
     return NULL;
   }
   guards_bytes = 3 * caml_plat_pagesize;
-  if (add_overflows_uintnat(2 * committed_bytes, guards_bytes)) return NULL;
-  mapping_bytes = 2 * committed_bytes + guards_bytes;
+  if (add_overflows_uintnat(2 * reserved_bytes, guards_bytes)) return NULL;
+  mapping_bytes = 2 * reserved_bytes + guards_bytes;
 
   heap = malloc(sizeof(*heap));
   if (heap == NULL) return NULL;
   for (unsigned space = 0; space < 2; space++) {
     shadow_headers[space] = calloc(
-      quota_words, sizeof(*shadow_headers[space]));
+      initial_words, sizeof(*shadow_headers[space]));
     if (shadow_headers[space] == NULL) goto metadata_failed;
   }
-  forwarding = calloc(quota_words, sizeof(*forwarding));
-  worklist = calloc(quota_words, sizeof(*worklist));
+  forwarding = calloc(initial_words, sizeof(*forwarding));
+  worklist = calloc(initial_words, sizeof(*worklist));
   if (forwarding == NULL || worklist == NULL) goto metadata_failed;
   mapping = caml_mem_map(mapping_bytes, 1);
   if (mapping == NULL) {
@@ -717,7 +818,7 @@ struct caml_actor_heap *caml_actor_heap_create(uintnat owner,
   if (caml_mem_commit(mapping + caml_plat_pagesize,
                       committed_bytes) == NULL
       || caml_mem_commit(
-           mapping + 2 * caml_plat_pagesize + committed_bytes,
+           mapping + 2 * caml_plat_pagesize + reserved_bytes,
            committed_bytes) == NULL) {
     caml_mem_unmap(mapping, mapping_bytes);
     goto metadata_failed;
@@ -726,18 +827,21 @@ struct caml_actor_heap *caml_actor_heap_create(uintnat owner,
   heap->owner = owner;
   heap->mapping = mapping;
   heap->mapping_bytes = mapping_bytes;
+  heap->reserved_space_bytes = reserved_bytes;
+  heap->committed_space_bytes = committed_bytes;
   heap->data_start[0] = (value *)(mapping + caml_plat_pagesize);
   heap->data_start[1] = (value *)(
-    mapping + 2 * caml_plat_pagesize + committed_bytes);
+    mapping + 2 * caml_plat_pagesize + reserved_bytes);
   for (unsigned space = 0; space < 2; space++) {
-    heap->data_end[space] = heap->data_start[space] + quota_words;
+    heap->data_end[space] = heap->data_start[space] + initial_words;
     heap->shadow_headers[space] = shadow_headers[space];
   }
   heap->active_space = 0;
   heap->cursor = heap->data_end[0];
   heap->forwarding = forwarding;
   heap->worklist = worklist;
-  heap->quota_words = quota_words;
+  heap->capacity_words = initial_words;
+  heap->quota_words = maximum_words;
   heap->used_words = 0;
   heap->blocks = 0;
   heap->shared_bypasses = 0;
@@ -770,6 +874,12 @@ metadata_failed:
   free(shadow_headers[0]);
   free(heap);
   return NULL;
+}
+
+struct caml_actor_heap *caml_actor_heap_create(uintnat owner,
+                                                mlsize_t quota_words)
+{
+  return caml_actor_heap_create_sized(owner, quota_words, quota_words);
 }
 
 void caml_actor_heap_destroy(struct caml_actor_heap *heap)
@@ -936,6 +1046,11 @@ uintnat caml_actor_heap_owner(const struct caml_actor_heap *heap)
 mlsize_t caml_actor_heap_quota_words(const struct caml_actor_heap *heap)
 {
   return heap->quota_words;
+}
+
+mlsize_t caml_actor_heap_capacity_words(const struct caml_actor_heap *heap)
+{
+  return heap->capacity_words;
 }
 
 mlsize_t caml_actor_heap_used_words(const struct caml_actor_heap *heap)
