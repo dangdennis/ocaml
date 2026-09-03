@@ -586,8 +586,9 @@ static void free_context(struct actor_copy_context *context)
   free(context->nodes);
 }
 
-struct caml_actor_copy_result caml_actor_copy_closure(
-  value source, uintnat owner, mlsize_t quota_words)
+struct caml_actor_copy_result caml_actor_copy_closure_sized(
+  value source, uintnat owner, mlsize_t initial_words,
+  mlsize_t maximum_words)
 {
   struct actor_copy_context context;
   struct caml_actor_copy_result result;
@@ -596,6 +597,7 @@ struct caml_actor_copy_result caml_actor_copy_closure(
   struct caml_actor_heap_verify_result verification;
   struct caml__roots_block *source_roots = NULL;
   uintnat root_index;
+  mlsize_t target_initial_words;
   int target_active = 0;
 
   if (!actor_copy_runtime_supported()) {
@@ -603,13 +605,13 @@ struct caml_actor_copy_result caml_actor_copy_closure(
   }
   if (Caml_state_opt == NULL || !caml_domain_alone()
       || !caml_actor_world_is_frozen() || Caml_state->gc_regs != NULL
-      || quota_words == 0) {
+      || initial_words == 0 || initial_words > maximum_words) {
     return copy_failure(CAML_ACTOR_COPY_INVALID_SOURCE);
   }
 
   memset(&context, 0, sizeof(context));
   context.source_heap = caml_actor_heap_current();
-  context.quota_words = quota_words;
+  context.quota_words = maximum_words;
   context.status = CAML_ACTOR_COPY_OK;
   if (!discover_graph(&context, source)) goto failed;
   if (!caml_actor_world_is_frozen()
@@ -618,7 +620,10 @@ struct caml_actor_copy_result caml_actor_copy_closure(
     goto failed;
   }
 
-  target_heap = caml_actor_heap_create(owner, quota_words);
+  target_initial_words = initial_words > context.copied_words
+    ? initial_words : context.copied_words;
+  target_heap = caml_actor_heap_create_sized(
+    owner, target_initial_words, maximum_words);
   if (target_heap == NULL) {
     context.status = CAML_ACTOR_COPY_RESOURCE_UNAVAILABLE;
     goto failed;
@@ -672,4 +677,11 @@ failed:
   result = copy_failure(context.status);
   free_context(&context);
   return result;
+}
+
+struct caml_actor_copy_result caml_actor_copy_closure(
+  value source, uintnat owner, mlsize_t quota_words)
+{
+  return caml_actor_copy_closure_sized(
+    source, owner, quota_words, quota_words);
 }

@@ -646,7 +646,7 @@ static int copied_closure_code_range(value closure,
 
 static enum caml_actor_spawn_status prepare_closure(
   struct caml_actor_scheduler *scheduler, int root, value closure,
-  mlsize_t heap_quota_words,
+  mlsize_t initial_heap_words, mlsize_t maximum_heap_words,
   struct caml_actor_prepared_spawn **prepared_out)
 {
   struct caml_actor_prepared_spawn *prepared = NULL;
@@ -663,7 +663,8 @@ static enum caml_actor_spawn_status prepare_closure(
 
   if (prepared_out != NULL) *prepared_out = NULL;
   if (scheduler == NULL || prepared_out == NULL
-      || heap_quota_words == 0) {
+      || initial_heap_words == 0
+      || initial_heap_words > maximum_heap_words) {
     return CAML_ACTOR_SPAWN_UNSUPPORTED;
   }
   if (root) {
@@ -695,7 +696,8 @@ static enum caml_actor_spawn_status prepare_closure(
   if (prepared == NULL) return CAML_ACTOR_SPAWN_HEAP_UNAVAILABLE;
   memset(prepared, 0, sizeof(*prepared));
 
-  copied = caml_actor_copy_closure(closure, pid, heap_quota_words);
+  copied = caml_actor_copy_closure_sized(
+    closure, pid, initial_heap_words, maximum_heap_words);
   if (copied.status != CAML_ACTOR_COPY_OK) {
     enum caml_actor_spawn_status status =
       copy_status_to_spawn_status(copied.status);
@@ -757,7 +759,17 @@ enum caml_actor_spawn_status caml_actor_scheduler_prepare_root_closure(
   struct caml_actor_prepared_spawn **prepared)
 {
   return prepare_closure(
-    scheduler, 1, closure, heap_quota_words, prepared);
+    scheduler, 1, closure, heap_quota_words, heap_quota_words, prepared);
+}
+
+enum caml_actor_spawn_status
+caml_actor_scheduler_prepare_root_closure_sized(
+  struct caml_actor_scheduler *scheduler, value closure,
+  mlsize_t initial_heap_words, mlsize_t maximum_heap_words,
+  struct caml_actor_prepared_spawn **prepared)
+{
+  return prepare_closure(
+    scheduler, 1, closure, initial_heap_words, maximum_heap_words, prepared);
 }
 
 enum caml_actor_spawn_status caml_actor_scheduler_prepare_closure(
@@ -766,7 +778,16 @@ enum caml_actor_spawn_status caml_actor_scheduler_prepare_closure(
   struct caml_actor_prepared_spawn **prepared)
 {
   return prepare_closure(
-    scheduler, 0, closure, heap_quota_words, prepared);
+    scheduler, 0, closure, heap_quota_words, heap_quota_words, prepared);
+}
+
+enum caml_actor_spawn_status caml_actor_scheduler_prepare_closure_sized(
+  struct caml_actor_scheduler *scheduler, value closure,
+  mlsize_t initial_heap_words, mlsize_t maximum_heap_words,
+  struct caml_actor_prepared_spawn **prepared)
+{
+  return prepare_closure(
+    scheduler, 0, closure, initial_heap_words, maximum_heap_words, prepared);
 }
 
 uintnat caml_actor_scheduler_prepared_pid(
