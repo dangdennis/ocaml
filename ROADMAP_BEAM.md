@@ -54,20 +54,23 @@ part of the current roadmap.
 | --- | --- | --- |
 | Actor MVP 0-7 | `actor-mvp/*`, PRs #1-#10 | Published as a stacked draft implementation |
 | Layer 8: compatibility and observability baseline | `actor-real/08-contract-observability-baseline`, PR #11 | Published draft |
-| Layer 9: frozen global reads | `actor-real/09-frozen-global-reads`, PR #12 | Published draft and current remote tip |
-| Layer 10: primitive capabilities and core Stdlib compatibility | No published branch or PR | In recovery; not yet part of the remote stack |
+| Layer 9: frozen global reads | `actor-real/09-frozen-global-reads`, PR #12 | Published draft and Layer 10 base |
+| Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities` | First audited primitive family published; full layer remains in progress |
 
-Layer 9 is the last authoritative implementation boundary. It admits validated
-read-only module globals and same-image closures, while mutation remains
-forbidden. `ocamlactorcheck` currently inventories bytecode operations and
-primitive calls but does not classify their capabilities or certify that a
-program will run.
+Layer 10 now extends the authoritative implementation boundary through commit
+`29786ee3cf`. Runtime enforcement and `ocamlactorcheck` consume one generated,
+reviewed primitive-capability policy. Unknown, forbidden, misnamed, and
+mis-arity primitive bindings fail closed. The first audited family implements
+actor-owned array creation, access, mutation, blit, and fill, including checked
+"unsafe" operations, frozen-destination rejection, overlap, GC movement, and
+actor-local quota failure.
 
-The broad compatibility corpus compiles through common Stdlib container code.
-The first recorded runtime boundary for Layer 10 is `caml_array_make/2`, reached
-through `Hashtbl.create`. Any uncommitted or unpushed Layer 10 scratch work must
-be audited before reuse and must not be treated as implemented merely because
-it appeared in a previous task transcript.
+This is a deliberately narrow compatibility slice, not a claim that the full
+Stdlib or Layer 10 is complete. Arbitrary C calls, `C_CALLN`, unsupported array
+operations and representations, custom blocks, resources, callbacks, and other
+unaudited primitive families remain forbidden. The next family must be selected
+from the next observed broad-corpus failure rather than from a speculative
+allowlist.
 
 ## Layer 10: primitive capabilities and core Stdlib compatibility
 
@@ -126,6 +129,38 @@ run the reference service without weakening actor ownership.
      service.
    - Record unsupported operations precisely instead of broadening the allowlist
      speculatively.
+
+### Milestone tracker
+
+Checked items are published and verified facts; unchecked items remain part of
+Layer 10.
+
+- [x] Recover the exact Layer 9 base and publish the Layer 10 working branch.
+- [x] Generate runtime and checker policy from one reviewed source of truth.
+- [x] Test safe, actor-local, scheduler-aware, forbidden, unknown, name-mismatch,
+      and arity-mismatch classifications.
+- [x] Admit the checked core array family: make, safe and unsafe get/set, blit,
+      and fill.
+- [x] Cover array aliases, bounds, overlap, GC movement, frozen destinations,
+      transactional validation, and actor-local allocation quota failure.
+- [x] Pass the focused actor loop, normal, debug, instrumented, tooling,
+      benchmark-smoke, ASan, UBSan, and repository-hygiene gates on a fresh
+      GitHub runner for `29786ee3cf`.
+- [ ] Re-run the broad Stdlib compatibility corpus and record its next exact
+      unsupported primitive or representation boundary.
+- [ ] Admit subsequent primitive families one audited slice at a time.
+- [ ] Support the approved frozen-origin immutable graph subset across
+      mailboxes as receiver-owned copies.
+- [ ] Compile and run the pure-OCaml package canary.
+- [ ] Pass the final full Layer 10 gates and open the stacked draft PR against
+      the exact Layer 9 remote tip.
+
+### Current next action
+
+Re-run the broad Stdlib compatibility corpus from `29786ee3cf`. Preserve the
+first reproducible failure as a red test, classify its primitive family and
+ownership effects, and implement only that audited family. Do not broaden the
+policy before that failure is known.
 
 ### Completion gates
 
