@@ -8025,6 +8025,11 @@ lex/table.cmo : \
 lex/table.cmx : \
     lex/table.cmi
 lex/table.cmi :
+tools/actor_primitive_policy.cmo : \
+    tools/actor_primitive_policy.cmi
+tools/actor_primitive_policy.cmx : \
+    tools/actor_primitive_policy.cmi
+tools/actor_primitive_policy.cmi :
 tools/bytecode_shape.cmo : \
     bytecomp/opcodes.cmi \
     tools/bytecode_shape.cmi
@@ -8154,11 +8159,6 @@ tools/objinfo.cmx : \
     utils/binutils.cmx \
     tools/objinfo.cmi
 tools/objinfo.cmi :
-tools/actor_primitive_policy.cmo : \
-    tools/actor_primitive_policy.cmi
-tools/actor_primitive_policy.cmx : \
-    tools/actor_primitive_policy.cmi
-tools/actor_primitive_policy.cmi :
 tools/ocamlactorcheck.cmo : \
     bytecomp/symtable.cmi \
     tools/opnames.cmi \

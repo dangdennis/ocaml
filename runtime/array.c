@@ -588,8 +588,8 @@ static value caml_actor_array_blit(value source, value source_offset,
       caml_invalid_argument("Array.blit: unsupported actor value");
     }
   }
-  memmove(&Field(destination, destination_start),
-          &Field(source, source_start), (mlsize_t)count * sizeof(value));
+  wo_memmove(&Field(destination, destination_start),
+             &Field(source, source_start), (mlsize_t)count);
   return Val_unit;
 }
 
