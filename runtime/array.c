@@ -28,6 +28,36 @@
 
 static const mlsize_t mlsize_t_max = CAML_UINTNAT_MAX;
 
+static int caml_actor_array_info(value array, mlsize_t *length, tag_t *tag)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+
+  if (array == Atom(0)) {
+    *length = 0;
+    *tag = 0;
+    return 1;
+  }
+  if (heap == NULL || !caml_actor_heap_owns_value(heap, array)) return 0;
+  *tag = Tag_val(array);
+  if (*tag != 0 && *tag != Double_array_tag) return 0;
+#ifdef FLAT_FLOAT_ARRAY
+  *length = *tag == Double_array_tag
+    ? Wosize_val(array) / Double_wosize : Wosize_val(array);
+#else
+  *length = Wosize_val(array);
+#endif
+  return 1;
+}
+
+static int caml_actor_array_range(value array, intnat offset, intnat length,
+                                  mlsize_t *array_length, tag_t *tag)
+{
+  return offset >= 0 && length >= 0
+    && caml_actor_array_info(array, array_length, tag)
+    && (uintnat)offset <= *array_length
+    && (uintnat)length <= *array_length - (uintnat)offset;
+}
+
 /* returns number of elements (either fields or floats) */
 /* [ 'a array -> int ] */
 CAMLexport mlsize_t caml_array_length(value array)
@@ -54,6 +84,18 @@ CAMLexport int caml_is_double_array(value array)
 CAMLprim value caml_array_get_addr(value array, value index)
 {
   intnat idx = Long_val(index);
+  if (caml_actor_heap_current() != NULL) {
+    value result;
+    mlsize_t length;
+    tag_t tag;
+
+    if (idx < 0 || !caml_actor_array_info(array, &length, &tag)
+        || tag != 0 || (uintnat)idx >= length
+        || !caml_actor_heap_read_field(array, (mlsize_t)idx, &result)) {
+      caml_array_bound_error();
+    }
+    return result;
+  }
   if (idx < 0 || idx >= Wosize_val(array)) caml_array_bound_error();
   return Field(array, idx);
 }
@@ -90,6 +132,19 @@ CAMLprim value caml_array_get(value array, value index)
 CAMLprim value caml_array_set_addr(value array, value index, value newval)
 {
   intnat idx = Long_val(index);
+  if (caml_actor_heap_current() != NULL) {
+    mlsize_t length;
+    tag_t tag;
+
+    if (!caml_actor_array_info(array, &length, &tag) || tag != 0) {
+      caml_invalid_argument("Array.set: array is not actor-owned");
+    }
+    if (idx < 0 || (uintnat)idx >= length) caml_array_bound_error();
+    if (caml_actor_heap_check_vector_store(array, (mlsize_t)idx, newval)
+        != CAML_ACTOR_HEAP_STORE_OK) {
+      caml_invalid_argument("Array.set: unsupported actor value");
+    }
+  }
   if (idx < 0 || idx >= Wosize_val(array)) caml_array_bound_error();
   caml_modify(&Field(array, idx), newval);
   return Val_unit;
@@ -136,6 +191,9 @@ CAMLprim value caml_floatarray_unsafe_get(value array, value index)
 /* [ 'a array -> int -> 'a ] */
 CAMLprim value caml_array_unsafe_get(value array, value index)
 {
+  if (caml_actor_heap_current() != NULL) {
+    return caml_array_get_addr(array, index);
+  }
 #ifdef FLAT_FLOAT_ARRAY
   if (Tag_val(array) == Double_array_tag)
     return caml_floatarray_unsafe_get(array, index);
@@ -170,6 +228,9 @@ CAMLprim value caml_floatarray_unsafe_set(value array, value index,value newval)
 /* [ 'a array -> int -> 'a -> unit ] */
 CAMLprim value caml_array_unsafe_set(value array, value index, value newval)
 {
+  if (caml_actor_heap_current() != NULL) {
+    return caml_array_set_addr(array, index, newval);
+  }
 #ifdef FLAT_FLOAT_ARRAY
   if (Tag_val(array) == Double_array_tag)
     return caml_floatarray_unsafe_set(array, index, newval);
@@ -492,9 +553,52 @@ CAMLprim value caml_uniform_array_blit(
   return Val_unit;
 }
 
+static value caml_actor_array_blit(value source, value source_offset,
+                                   value destination,
+                                   value destination_offset, value length)
+{
+  intnat source_start = Long_val(source_offset);
+  intnat destination_start = Long_val(destination_offset);
+  intnat count = Long_val(length);
+  mlsize_t source_length;
+  mlsize_t destination_length;
+  tag_t source_tag;
+  tag_t destination_tag;
+
+  if (!caml_actor_array_range(
+        source, source_start, count, &source_length, &source_tag)
+      || !caml_actor_array_range(
+        destination, destination_start, count,
+        &destination_length, &destination_tag)
+      || source_tag != destination_tag) {
+    caml_invalid_argument("Array.blit: unsupported actor array");
+  }
+  if (count == 0) return Val_unit;
+#ifdef FLAT_FLOAT_ARRAY
+  if (source_tag == Double_array_tag) {
+    memmove((double *)destination + destination_start,
+            (double *)source + source_start,
+            (mlsize_t)count * sizeof(double));
+    return Val_unit;
+  }
+#endif
+  for (intnat index = 0; index < count; index++) {
+    if (!caml_actor_heap_value_is_storable(
+          Field(source, source_start + index))) {
+      caml_invalid_argument("Array.blit: unsupported actor value");
+    }
+  }
+  memmove(&Field(destination, destination_start),
+          &Field(source, source_start), (mlsize_t)count * sizeof(value));
+  return Val_unit;
+}
+
 CAMLprim value caml_array_blit(value a1, value ofs1, value a2, value ofs2,
                                value n)
 {
+  if (caml_actor_heap_current() != NULL) {
+    return caml_actor_array_blit(a1, ofs1, a2, ofs2, n);
+  }
 #ifdef FLAT_FLOAT_ARRAY
   if (Tag_val(a2) == Double_array_tag)
     return caml_floatarray_blit(a1, ofs1, a2, ofs2, n);
@@ -817,11 +921,49 @@ CAMLprim value caml_uniform_array_fill(
   return Val_unit;
 }
 
+static value caml_actor_array_fill(value array, value v_ofs, value v_len,
+                                   value new_value)
+{
+  intnat offset = Long_val(v_ofs);
+  intnat length = Long_val(v_len);
+  mlsize_t array_length;
+  tag_t tag;
+
+  if (!caml_actor_array_range(
+        array, offset, length, &array_length, &tag)) {
+    caml_invalid_argument("Array.fill: unsupported actor array");
+  }
+  if (!caml_actor_heap_value_is_storable(new_value)) {
+    caml_invalid_argument("Array.fill: unsupported actor value");
+  }
+#ifdef FLAT_FLOAT_ARRAY
+  if (tag == Double_array_tag) {
+    double number;
+
+    if (!Is_block(new_value) || Tag_val(new_value) != Double_tag) {
+      caml_invalid_argument("Array.fill: expected float value");
+    }
+    number = Double_val(new_value);
+    for (intnat index = 0; index < length; index++) {
+      Store_double_flat_field(array, offset + index, number);
+    }
+    return Val_unit;
+  }
+#endif
+  for (intnat index = 0; index < length; index++) {
+    Field(array, offset + index) = new_value;
+  }
+  return Val_unit;
+}
+
 CAMLprim value caml_array_fill(value array,
                                value v_ofs,
                                value v_len,
                                value val)
 {
+  if (caml_actor_heap_current() != NULL) {
+    return caml_actor_array_fill(array, v_ofs, v_len, val);
+  }
 #ifdef FLAT_FLOAT_ARRAY
   if (Tag_val(array) == Double_array_tag) {
     return caml_floatarray_fill(array, v_ofs, v_len, val);
