@@ -1,0 +1,20 @@
+/*
+ * Audited bytecode-actor primitive policy.
+ *
+ * ACTOR_PRIMITIVE(name, function, arity, capability, family, audit)
+ *
+ * This is the single reviewed source used by both the runtime fence and
+ * ocamlactorcheck.  Keep every entry on one line: the tooling generator
+ * deliberately accepts only this narrow form.  Unknown names and arities
+ * are forbidden.
+ */
+
+ACTOR_PRIMITIVE("caml_int_compare", caml_int_compare, 2, PURE, integer, "Compares two tagged integers without allocation or mutation.")
+ACTOR_PRIMITIVE("caml_actor_spawn", caml_actor_spawn, 1, SCHEDULER_AWARE, actor, "Copies a closure into a new private heap through the scheduler.")
+ACTOR_PRIMITIVE("caml_actor_self", caml_actor_self, 1, SCHEDULER_AWARE, actor, "Returns the scheduler-owned identity of the current actor.")
+ACTOR_PRIMITIVE("caml_actor_yield", caml_actor_yield, 1, SCHEDULER_AWARE, actor, "Requests a scheduler yield after the primitive returns.")
+ACTOR_PRIMITIVE("caml_actor_send", caml_actor_send, 2, SCHEDULER_AWARE, actor, "Encodes and transactionally commits a pointer-free mailbox message.")
+ACTOR_PRIMITIVE("caml_actor_receive", caml_actor_receive, 1, SCHEDULER_AWARE, actor, "Receives through the scheduler-owned mailbox boundary.")
+ACTOR_PRIMITIVE("caml_actor_stats", caml_actor_stats, 1, SCHEDULER_AWARE, actor, "Copies deterministic scheduler counters into the current actor heap.")
+ACTOR_PRIMITIVE("caml_array_make", caml_array_make, 2, ACTOR_LOCAL, array, "Allocates through actor-aware allocation and initializes only the new actor-owned array.")
+ACTOR_PRIMITIVE("caml_sys_get_config", CAML_ACTOR_NO_PRIMITIVE, 1, FORBIDDEN, system, "Reads process-global runtime configuration outside actor ownership.")

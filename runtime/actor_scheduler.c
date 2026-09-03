@@ -40,12 +40,38 @@
 #if !defined(NATIVE_CODE)
 
 CAMLextern value caml_int_compare(value left, value right);
+CAMLextern value caml_array_make(value len, value init);
 CAMLextern value caml_actor_spawn(value closure);
 CAMLextern value caml_actor_self(value inbox);
 CAMLextern value caml_actor_yield(value unit);
 CAMLextern value caml_actor_send(value pid, value message);
 CAMLextern value caml_actor_receive(value inbox);
 CAMLextern value caml_actor_stats(value unit);
+
+enum caml_actor_primitive_capability {
+  CAML_ACTOR_PRIMITIVE_PURE = 0,
+  CAML_ACTOR_PRIMITIVE_ACTOR_LOCAL,
+  CAML_ACTOR_PRIMITIVE_SCHEDULER_AWARE,
+  CAML_ACTOR_PRIMITIVE_FORBIDDEN
+};
+
+struct caml_actor_primitive_policy_entry {
+  const char *name;
+  c_primitive function;
+  int arity;
+  enum caml_actor_primitive_capability capability;
+};
+
+#define CAML_ACTOR_NO_PRIMITIVE NULL
+#define ACTOR_PRIMITIVE(name, function, arity, capability, family, audit) \
+  { name, (c_primitive)(function), arity, \
+    CAML_ACTOR_PRIMITIVE_ ## capability },
+static const struct caml_actor_primitive_policy_entry
+actor_primitive_policy[] = {
+#include "actor_primitive_policy.def"
+};
+#undef ACTOR_PRIMITIVE
+#undef CAML_ACTOR_NO_PRIMITIVE
 
 struct caml_actor_slot {
   enum caml_actor_lifecycle lifecycle;
@@ -1287,19 +1313,26 @@ caml_actor_scheduler_take_control_request(void)
 int caml_actor_scheduler_primitive_allowed(uintnat primitive, int arity)
 {
   c_primitive function;
+  const char *name;
 
-  if (primitive >= (uintnat)caml_prim_table.size) return 0;
+  if (primitive >= (uintnat)caml_prim_table.size
+      || primitive >= (uintnat)caml_prim_name_table.size) return 0;
   function = (c_primitive)caml_prim_table.contents[primitive];
-  if (arity == 1) {
-    return function == (c_primitive)caml_actor_spawn
-      || function == (c_primitive)caml_actor_self
-      || function == (c_primitive)caml_actor_yield
-      || function == (c_primitive)caml_actor_receive
-      || function == (c_primitive)caml_actor_stats;
+  name = caml_prim_name_table.contents[primitive];
+  if (name == NULL) return 0;
+  for (mlsize_t index = 0;
+       index < sizeof(actor_primitive_policy)
+                 / sizeof(actor_primitive_policy[0]);
+       index++) {
+    const struct caml_actor_primitive_policy_entry *entry =
+      &actor_primitive_policy[index];
+    if (strcmp(name, entry->name) != 0) continue;
+    return arity == entry->arity
+      && entry->capability != CAML_ACTOR_PRIMITIVE_FORBIDDEN
+      && entry->function != NULL
+      && function == entry->function;
   }
-  return arity == 2
-    && (function == (c_primitive)caml_int_compare
-        || function == (c_primitive)caml_actor_send);
+  return 0;
 }
 
 #else /* NATIVE_CODE */

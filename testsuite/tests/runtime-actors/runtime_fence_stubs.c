@@ -39,6 +39,7 @@
 
 CAMLextern value caml_int_compare(value left, value right);
 CAMLextern value caml_actor_send(value pid, value message);
+CAMLextern value caml_array_make(value len, value init);
 
 static opcode_t setfield_code[9];
 static opcode_t setvect_code[11];
@@ -103,17 +104,44 @@ static void register_code(opcode_t *code, mlsize_t words)
 
 static int prepare_code(void)
 {
+  int array_primitive;
   int compare_primitive;
   int send_primitive;
   int poison_primitive;
+  void *saved_function;
+  void *saved_name;
+  int exact_policy;
 
   if (code_ready) return 1;
+  array_primitive = primitive_index((c_primitive)caml_array_make);
   compare_primitive = primitive_index((c_primitive)caml_int_compare);
   send_primitive = primitive_index((c_primitive)caml_actor_send);
   poison_primitive = primitive_index(
     (c_primitive)caml_actor_test_runtime_fence_poison);
-  if (compare_primitive < 0 || send_primitive < 0
+  if (array_primitive < 0 || compare_primitive < 0 || send_primitive < 0
       || poison_primitive < 0) return 0;
+
+  if (!caml_actor_scheduler_primitive_allowed(compare_primitive, 2)
+      || caml_actor_scheduler_primitive_allowed(compare_primitive, 1)
+      || !caml_actor_scheduler_primitive_allowed(array_primitive, 2)
+      || caml_actor_scheduler_primitive_allowed(poison_primitive, 2)
+      || caml_actor_scheduler_primitive_allowed(caml_prim_table.size, 2)) {
+    return 0;
+  }
+  saved_name = caml_prim_name_table.contents[compare_primitive];
+  caml_prim_name_table.contents[compare_primitive] =
+    caml_prim_name_table.contents[array_primitive];
+  exact_policy =
+    !caml_actor_scheduler_primitive_allowed(compare_primitive, 2);
+  caml_prim_name_table.contents[compare_primitive] = saved_name;
+  if (!exact_policy) return 0;
+  saved_function = caml_prim_table.contents[compare_primitive];
+  caml_prim_table.contents[compare_primitive] =
+    caml_prim_table.contents[array_primitive];
+  exact_policy =
+    !caml_actor_scheduler_primitive_allowed(compare_primitive, 2);
+  caml_prim_table.contents[compare_primitive] = saved_function;
+  if (!exact_policy) return 0;
 
   caml_set_instruction(&setfield_code[0], CONST0);
   caml_set_instruction(&setfield_code[1], MAKEBLOCK1);

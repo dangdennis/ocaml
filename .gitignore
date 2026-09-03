@@ -284,6 +284,7 @@ META
 /tools/ocamlprof
 /tools/ocamlprof.opt
 /tools/opnames.ml
+/tools/actor_primitive_policy.ml
 /tools/dumpobj
 /tools/dumpobj.opt
 /tools/ocamlactorcheck
