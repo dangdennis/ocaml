@@ -41,6 +41,17 @@
 
 CAMLextern value caml_int_compare(value left, value right);
 CAMLextern value caml_array_make(value len, value init);
+CAMLextern value caml_array_get_addr(value array, value index);
+CAMLextern value caml_array_set_addr(
+  value array, value index, value new_value);
+CAMLextern value caml_array_unsafe_get(value array, value index);
+CAMLextern value caml_array_unsafe_set(
+  value array, value index, value new_value);
+CAMLextern value caml_array_blit(
+  value source, value source_offset, value destination,
+  value destination_offset, value length);
+CAMLextern value caml_array_fill(
+  value array, value offset, value length, value new_value);
 CAMLextern value caml_actor_spawn(value closure);
 CAMLextern value caml_actor_self(value inbox);
 CAMLextern value caml_actor_yield(value unit);

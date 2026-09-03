@@ -44,6 +44,17 @@ let root _inbox =
   in
   assert bounds_rejected;
 
+  let source = [| 1; 2; 3; 4 |] in
+  let destination = Array.make 5 0 in
+  Array.blit source 1 destination 0 3;
+  assert (destination = [| 2; 3; 4; 0; 0 |]);
+  Array.fill destination 1 3 9;
+  assert (destination = [| 2; 9; 9; 9; 0 |]);
+  Array.blit destination 0 destination 1 4;
+  assert (destination = [| 2; 2; 9; 9; 9 |]);
+  Array.unsafe_set destination 4 12;
+  assert (Array.unsafe_get destination 4 = 12);
+
   let table = Hashtbl.create ~random:false 31 in
   assert (Hashtbl.length table = 0);
 
