@@ -48,6 +48,7 @@ struct caml_actor_heap {
   uintnat blocks;
   uintnat shared_bypasses;
   uintnat collections;
+  uintnat growths;
   unsigned active_space;
   int active;
   struct caml_actor_heap *next;
@@ -625,6 +626,10 @@ static int actor_heap_collect_to_capacity(struct caml_actor_heap *heap,
   for (unsigned space = 0; space < 2; space++) {
     heap->data_end[space] = heap->data_start[space] + capacity_words;
   }
+  if (capacity_words > heap->capacity_words
+      && heap->growths < CAML_UINTNAT_MAX) {
+    heap->growths++;
+  }
   heap->capacity_words = capacity_words;
   heap->active_space = context.to_space;
   heap->cursor = context.to_cursor;
@@ -846,6 +851,7 @@ struct caml_actor_heap *caml_actor_heap_create_sized(
   heap->blocks = 0;
   heap->shared_bypasses = 0;
   heap->collections = 0;
+  heap->growths = 0;
   heap->active = 0;
 
   caml_plat_lock_non_blocking(&actor_heaps_lock);
@@ -1071,6 +1077,11 @@ uintnat caml_actor_heap_shared_bypasses(const struct caml_actor_heap *heap)
 uintnat caml_actor_heap_collections(const struct caml_actor_heap *heap)
 {
   return heap->collections;
+}
+
+uintnat caml_actor_heap_growths(const struct caml_actor_heap *heap)
+{
+  return heap->growths;
 }
 
 void caml_actor_heap_note_shared_bypass(struct caml_actor_heap *heap)

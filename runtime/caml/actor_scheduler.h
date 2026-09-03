@@ -133,6 +133,14 @@ struct caml_actor_scheduler_stats {
   uintnat mailbox_messages;
   uintnat mailbox_bytes;
   uintnat mailbox_quota_failures;
+  uintnat current_heap_words;
+  uintnat maximum_heap_words;
+  uintnat heap_growths;
+  uintnat actor_capacity;
+  uintnat reduction_budget;
+  uintnat message_word_limit;
+  uintnat mailbox_message_limit;
+  uintnat mailbox_byte_limit;
 };
 
 CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create(

@@ -60,9 +60,12 @@ the structured exit-reason API lands in Layer 12.
 
 `Actor.stats ()` is an actor-world-only, deterministic snapshot. Its lifetime
 counters are monotonic and saturate at `max_int`; `mailbox_messages` is a
-current gauge, and `runnable_actors` includes the actor taking the snapshot.
-Retirement records unread envelopes in `messages_dropped`. Wall-clock and
-throughput measurements remain outside actor heaps in the benchmark harness.
+current gauge, `mailbox_bytes` is the current encoded-byte charge, and
+`runnable_actors` includes the actor taking the snapshot. The snapshot also
+reports immutable world limits and the calling actor's current heap capacity,
+maximum, and growth count. It obtains no foreign heap data. Retirement records
+unread envelopes in `messages_dropped`. Wall-clock and throughput measurements
+remain outside actor heaps in the benchmark harness.
 
 ## Monitoring, waiting, and failure data
 

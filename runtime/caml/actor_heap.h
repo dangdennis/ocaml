@@ -95,6 +95,8 @@ CAMLextern uintnat caml_actor_heap_shared_bypasses(
   const struct caml_actor_heap *heap);
 CAMLextern uintnat caml_actor_heap_collections(
   const struct caml_actor_heap *heap);
+CAMLextern uintnat caml_actor_heap_growths(
+  const struct caml_actor_heap *heap);
 CAMLextern void caml_actor_heap_note_shared_bypass(
   struct caml_actor_heap *heap);
 

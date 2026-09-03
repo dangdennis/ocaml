@@ -1303,8 +1303,15 @@ int caml_actor_scheduler_stats(
   const struct caml_actor_scheduler *scheduler,
   struct caml_actor_scheduler_stats *stats)
 {
+  const struct caml_actor_slot *current;
+
   if (scheduler == NULL || stats == NULL
       || !running_context_matches(scheduler)) {
+    return 0;
+  }
+  current = &scheduler->slots[scheduler->current];
+  if (current->heap == NULL
+      || caml_actor_heap_owner(current->heap) != current->pid) {
     return 0;
   }
 
@@ -1320,6 +1327,14 @@ int caml_actor_scheduler_stats(
   stats->mailbox_messages = scheduler->mailbox_messages;
   stats->mailbox_bytes = scheduler->mailbox_bytes;
   stats->mailbox_quota_failures = scheduler->mailbox_quota_failures;
+  stats->current_heap_words = caml_actor_heap_capacity_words(current->heap);
+  stats->maximum_heap_words = caml_actor_heap_quota_words(current->heap);
+  stats->heap_growths = caml_actor_heap_growths(current->heap);
+  stats->actor_capacity = scheduler->capacity;
+  stats->reduction_budget = scheduler->reduction_budget;
+  stats->message_word_limit = scheduler->message_quota_words;
+  stats->mailbox_message_limit = scheduler->mailbox_message_limit;
+  stats->mailbox_byte_limit = scheduler->mailbox_byte_limit;
 
   for (uintnat index = 0; index < scheduler->capacity; index++) {
     const struct caml_actor_slot *slot = &scheduler->slots[index];
