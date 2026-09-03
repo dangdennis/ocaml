@@ -112,6 +112,21 @@ make -C testsuite one DIR=tests/effects
 make -C api_docgen
 ```
 
+## Package canary
+
+The Layer 10 canary downloads the pinned Astring 0.8.5 source release, verifies
+its SHA-256 checksum, compiles it with the in-tree bytecode compiler, and runs a
+small actor line-protocol service:
+
+```sh
+tools/ci/actions/actor-package-canary.sh
+```
+
+For an offline run, point `ASTRING_ARCHIVE` at the already downloaded release
+archive. The same checksum is required. The canary deliberately uses
+`Hashtbl.create ~random:false`; default hash-table creation reads a
+process-global atomic flag and is outside Layer 10.
+
 ## Runtime counters and benchmarks
 
 Actor code can snapshot deterministic scheduler totals with [Actor.stats].

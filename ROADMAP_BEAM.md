@@ -55,22 +55,21 @@ part of the current roadmap.
 | Actor MVP 0-7 | `actor-mvp/*`, PRs #1-#10 | Published as a stacked draft implementation |
 | Layer 8: compatibility and observability baseline | `actor-real/08-contract-observability-baseline`, PR #11 | Published draft |
 | Layer 9: frozen global reads | `actor-real/09-frozen-global-reads`, PR #12 | Published draft and Layer 10 base |
-| Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | First audited primitive family published; full layer remains in progress |
+| Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | Implementation complete; final validation in progress |
 
-Layer 10 now extends the authoritative implementation boundary through commit
-`29786ee3cf`. Runtime enforcement and `ocamlactorcheck` consume one generated,
-reviewed primitive-capability policy. Unknown, forbidden, misnamed, and
-mis-arity primitive bindings fail closed. The first audited family implements
-actor-owned array creation, access, mutation, blit, and fill, including checked
-"unsafe" operations, frozen-destination rejection, overlap, GC movement, and
-actor-local quota failure.
+Layer 10's published implementation boundary comprises the generated policy
+and array slice through `29786ee3cf`, the corpus-driven string, hashing,
+comparison, integer, and float slices through `62a15896ba`, and frozen mailbox
+copying through `7460e15285`. Unknown, forbidden, misnamed, and mis-arity
+primitive bindings still fail closed.
 
-This is a deliberately narrow compatibility slice, not a claim that the full
-Stdlib or Layer 10 is complete. Arbitrary C calls, `C_CALLN`, unsupported array
-operations and representations, custom blocks, resources, callbacks, and other
-unaudited primitive families remain forbidden. The next family must be selected
-from the next observed broad-corpus failure rather than from a speculative
-allowlist.
+This remains a deliberately bounded compatibility surface, not a claim that
+all of Stdlib is actor-safe. Arbitrary C calls, `C_CALLN`, custom blocks,
+resources, callbacks, and unaudited primitive families remain forbidden.
+Default `Hashtbl.create` is a documented boundary because it reads Stdlib's
+process-global atomic randomization flag; actor code must currently request
+`~random:false`. The Astring package canary pins version 0.8.5 and its source
+checksum, then exercises actor-local parsing, hashing, and mailbox transfer.
 
 ## Layer 10: primitive capabilities and core Stdlib compatibility
 
@@ -121,8 +120,9 @@ run the reference service without weakening actor ownership.
      and cycles.
    - Decode only into the receiver's heap; source provenance must not appear in
      the wire format.
-   - Continue rejecting closures, resources, mutable frozen state, and
-     unsupported layouts transactionally.
+   - Continue rejecting closures, resources, mutation of frozen source state,
+     and unsupported layouts transactionally. A copied ordinary data block may
+     subsequently be mutated because it is receiver-owned.
 
 6. **Exercise a package canary**
    - Compile and run a small pure-OCaml package representative of the reference
@@ -146,21 +146,21 @@ Layer 10.
 - [x] Pass the focused actor loop, normal, debug, instrumented, tooling,
       benchmark-smoke, ASan, UBSan, and repository-hygiene gates on a fresh
       GitHub runner for `29786ee3cf`.
-- [ ] Re-run the broad Stdlib compatibility corpus and record its next exact
+- [x] Re-run the broad Stdlib compatibility corpus and record its next exact
       unsupported primitive or representation boundary.
-- [ ] Admit subsequent primitive families one audited slice at a time.
-- [ ] Support the approved frozen-origin immutable graph subset across
+- [x] Admit subsequent primitive families one audited slice at a time.
+- [x] Support the approved frozen-origin graph subset across
       mailboxes as receiver-owned copies.
-- [ ] Compile and run the pure-OCaml package canary.
-- [ ] Pass the final full Layer 10 gates and open the stacked draft PR against
-      the exact Layer 9 remote tip.
+- [x] Compile and run the pinned pure-OCaml Astring package canary.
+- [x] Open stacked draft PR #13 against the exact Layer 9 remote tip.
+- [ ] Pass the final full Layer 10 local and fresh-runner gates.
 
 ### Current next action
 
-Re-run the broad Stdlib compatibility corpus from `29786ee3cf`. Preserve the
-first reproducible failure as a red test, classify its primitive family and
-ownership effects, and implement only that audited family. Do not broaden the
-policy before that failure is known.
+Run the complete normal, debug, instrumented, tooling, benchmark, sanitizer,
+upstream-bytecode, and repository-hygiene matrix at the final branch tip. Treat
+the fresh GitHub runner as the publication gate; do not mark Layer 10 complete
+until every required check is green.
 
 ### Completion gates
 
