@@ -40,6 +40,8 @@ module Actor : sig
     max_actors : int;
     reductions_per_slice : int;
     max_message_words : int;
+    max_mailbox_messages : int;
+    max_mailbox_bytes : int;
   }
 
   val default_world_config : world_config
@@ -125,6 +127,14 @@ and 65,536 graph words per send. The scheduler owns this immutable
 configuration. Message encoding obtains its quota only through the active
 scheduler context, then discovers and validates the complete graph before
 publishing any pointer-free envelope.
+
+The default aggregate mailbox limits are 65,536 queued messages and
+268,435,456 encoded bytes. The canonical byte charge is one root-token word
+plus the unique graph words in the envelope; aliases and cycles are charged
+once. Both limits are checked before send preparation and again at commit.
+Quota rejection links no envelope, changes no mailbox gauge, and does not wake
+a blocked receiver. Receiving or retiring an actor releases the corresponding
+message and byte charges.
 
 ## Execution semantics
 
