@@ -57,6 +57,8 @@ jobs:
           make -C testsuite one DIR=tests/tool-dumpobj \
             OCAMLTESTDIR=/tmp/tool-dumpobj \
             TESTLOG=/tmp/tool-dumpobj.log
+      - name: Astring actor package canary
+        run: tools/ci/actions/actor-package-canary.sh
       - name: Benchmark smoke test
         run: |
           bench_dir="$(mktemp -d)"
