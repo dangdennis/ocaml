@@ -46,13 +46,14 @@ function header_blank() {
 function header_blurb(text) {
   printf "(*   %-69s*)\n", text
 }
-function emit_entry(line, field, name, arity, capability, family, audit,
-                    key, ocaml_capability) {
+function emit_entry(line, field, name, function_name, arity, capability,
+                    family, audit, key, ocaml_capability) {
   sub(/^[[:space:]]*ACTOR_PRIMITIVE\(/, "", line)
   sub(/\)[[:space:]]*$/, "", line)
   if (split(line, field, /,[[:space:]]*/) != 6)
     fail("primitive entry must contain exactly six comma-free fields")
   name = unquote(field[1])
+  function_name = trim(field[2])
   arity = trim(field[3])
   capability = trim(field[4])
   family = trim(field[5])
@@ -64,6 +65,12 @@ function emit_entry(line, field, name, arity, capability, family, audit,
     ocaml_capability = "Scheduler_aware"
   else if (capability == "FORBIDDEN") ocaml_capability = "Forbidden"
   else fail("unknown capability " capability)
+  if (capability == "FORBIDDEN") {
+    if (function_name != "CAML_ACTOR_NO_PRIMITIVE")
+      fail("forbidden primitive must not name a function")
+  } else if (function_name != name) {
+    fail("primitive name and function must match")
+  }
   key = name "/" arity
   if (seen[key]++) fail("duplicate primitive policy entry " key)
   if (seen_name[name]++) fail("duplicate primitive policy name " name)
