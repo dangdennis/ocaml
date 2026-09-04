@@ -39,7 +39,8 @@ module Actor : sig
     | Cancelled
     | Unsupported_operation of string
     | Runtime_failure of string
-  type monitor_error = Monitor_missing | Monitor_stale
+  type monitor_error = Monitor_missing | Monitor_stale | Monitor_limit
+  type cancel_error = Cancel_missing | Cancel_stale | Cancel_self
 
   type heap_limits = {
     initial_words : int;
@@ -57,6 +58,7 @@ module Actor : sig
     max_message_words : int;
     max_mailbox_messages : int;
     max_mailbox_bytes : int;
+    max_monitors : int;
   }
 
   val default_world_config : world_config
@@ -100,6 +102,10 @@ module Actor : sig
     message_word_limit : int;
     mailbox_message_limit : int;
     mailbox_byte_limit : int;
+    monitors : int;
+    peak_monitors : int;
+    monitor_quota_failures : int;
+    monitor_limit : int;
   }
 
   val run : (unit inbox -> unit) -> (unit, run_error) result
@@ -113,6 +119,7 @@ module Actor : sig
   val spawn_with_heap_limits : heap_limits ->
     ('message inbox -> unit) -> ('message pid, spawn_error) result
   val monitor : _ pid -> (monitor, monitor_error) result
+  val cancel : _ pid -> (unit, cancel_error) result
   val await_exit : monitor -> exit_reason
   val self : 'message inbox -> 'message pid
   val send : 'message pid -> 'message -> (unit, send_error) result
@@ -193,6 +200,13 @@ dispatch. The normal retirement boundary then publishes `Cancelled`, drops
 queued messages, destroys the target heap, and advances its PID generation.
 Self-cancellation returns `Cancel_self`; it never destroys the active actor
 heap beneath the bytecode interpreter.
+
+`world_config.max_monitors` bounds scheduler-owned monitor records and
+defaults to 65,536. Registration checks the quota before allocation, returns
+`Monitor_limit` without partial publication, and records a deterministic
+quota failure. `Actor.stats` exposes the live and peak monitor counts, quota
+failures, and configured limit. Consuming a ready exit, rolling back a token
+allocation, or retiring a watcher releases one live record exactly once.
 
 ## Execution semantics
 

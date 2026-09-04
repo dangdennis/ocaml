@@ -50,7 +50,7 @@ type exit_reason =
     mailbox condition; a recoverable {!send} rejection does not terminate
     its caller. *)
 
-type monitor_error = Monitor_missing | Monitor_stale
+type monitor_error = Monitor_missing | Monitor_stale | Monitor_limit
 
 type cancel_error = Cancel_missing | Cancel_stale | Cancel_self
 
@@ -72,13 +72,14 @@ type world_config = {
   max_message_words : int;
   max_mailbox_messages : int;
   max_mailbox_bytes : int;
+  max_monitors : int;
 }
 (** Immutable actor-world limits. [max_actors] includes the root actor and must
     be between 2 and 65,536. Reduction and message limits must be positive.
     [max_message_words] bounds graph discovery and pointer-free serialization
     work for each send. [max_mailbox_messages] and [max_mailbox_bytes] bound
     the aggregate queued envelopes in the actor world. All limits must be
-    positive. *)
+    positive. [max_monitors] bounds scheduler-owned monitor records. *)
 
 val default_world_config : world_config
 
@@ -121,6 +122,10 @@ type stats = {
   message_word_limit : int;
   mailbox_message_limit : int;
   mailbox_byte_limit : int;
+  monitors : int;
+  peak_monitors : int;
+  monitor_quota_failures : int;
+  monitor_limit : int;
 }
 (** A deterministic snapshot of the current actor world's scheduler counts.
     [runnable_actors] includes the actor taking the snapshot.
@@ -128,8 +133,10 @@ type stats = {
     [mailbox_bytes] is the current aggregate encoded-byte charge and
     [mailbox_quota_failures] counts rejected graph, message-count, and byte
     quota attempts. Heap fields describe only the actor taking the snapshot;
-    the remaining limit fields describe its immutable actor world. Counters
-    saturate at [max_int]. *)
+    [monitors] includes pending and ready unconsumed monitor records.
+    [peak_monitors], [monitor_quota_failures], and [monitor_limit] describe
+    deterministic monitor-resource use. The remaining limit fields describe
+    the immutable actor world. Counters saturate at [max_int]. *)
 
 external run : (unit inbox -> unit) -> (unit, run_error) result
   = "caml_actor_run"
@@ -163,7 +170,8 @@ val monitor : _ pid -> (monitor, monitor_error) result
 (** [monitor pid] registers the calling actor to receive exactly one exit
     reason for the current generation of [pid]. Dead empty slots report
     [Monitor_missing]; mismatched or retired generations report
-    [Monitor_stale]. *)
+    [Monitor_stale], and a full world-owned monitor table reports
+    [Monitor_limit] without registering a partial monitor. *)
 
 val cancel : _ pid -> (unit, cancel_error) result
 (** [cancel pid] requests deterministic termination of the current generation
