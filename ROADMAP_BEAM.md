@@ -325,8 +325,8 @@ supervision, timers, and general wait sets remain outside this layer.
 
 ### Current next action
 
-Add race, cleanup, and PID-reuse stress cases, then re-run the complete
-sanitizer, package, benchmark, hygiene, and fresh-runner gates.
+Re-run the complete sanitizer, package, benchmark, hygiene, and fresh-runner
+gates at the Layer 12 implementation tip.
 
 ## Layer 13: supervision
 
