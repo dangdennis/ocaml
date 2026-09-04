@@ -25,6 +25,13 @@ let monitor_or_fail pid =
   | Error Actor.Monitor_missing -> failwith "monitor missing"
   | Error Actor.Monitor_stale -> failwith "monitor stale"
 
+let cancel_or_fail pid =
+  match Actor.cancel pid with
+  | Ok () -> ()
+  | Error Actor.Cancel_missing -> failwith "cancel missing"
+  | Error Actor.Cancel_stale -> failwith "cancel stale"
+  | Error Actor.Cancel_self -> failwith "cancel self"
+
 let rec retain_live n retained =
   if n = 0 then retained
   else retain_live (n - 1) (n :: retained)
@@ -175,8 +182,50 @@ let check_foreign_and_consumed_fail_closed () =
     ignore root));
   print_endline "foreign and consumed monitors fail closed: ok"
 
+let check_cancellation () =
+  require_ok "cancellation" (Actor.run (fun root_inbox ->
+    let runnable = spawn_or_fail (fun _ -> assert false) in
+    let runnable_monitor = monitor_or_fail runnable in
+    cancel_or_fail runnable;
+    begin match Actor.await_exit runnable_monitor with
+    | Actor.Cancelled -> ()
+    | _ -> failwith "expected runnable cancellation"
+    end;
+    begin match Actor.cancel runnable with
+    | Error Actor.Cancel_stale -> ()
+    | _ -> failwith "cancelled PID did not become stale"
+    end;
+
+    let blocked = spawn_or_fail (fun inbox -> ignore (Actor.receive inbox)) in
+    let blocked_monitor = monitor_or_fail blocked in
+    Actor.yield ();
+    cancel_or_fail blocked;
+    begin match Actor.await_exit blocked_monitor with
+    | Actor.Cancelled -> ()
+    | _ -> failwith "expected blocked cancellation"
+    end;
+
+    begin match Actor.cancel (Actor.self root_inbox) with
+    | Error Actor.Cancel_self -> ()
+    | _ -> failwith "self cancellation did not fail recoverably"
+    end;
+    let missing : unit Actor.pid = Obj.magic ((1 lsl 16) lor 7) in
+    begin match Actor.cancel missing with
+    | Error Actor.Cancel_missing -> ()
+    | _ -> failwith "missing cancellation target did not stay missing"
+    end));
+  begin match Actor.run (fun root_inbox ->
+    let root = Actor.self root_inbox in
+    ignore (spawn_or_fail (fun _ -> cancel_or_fail root));
+    Actor.yield ()) with
+  | Error (Actor.Root_failed "root actor cancelled") -> ()
+  | _ -> failwith "root cancellation did not terminate the world"
+  end;
+  print_endline "generation-checked cancellation: ok"
+
 let () =
   check_normal_and_fifo ();
   check_failures ();
   check_identity_and_fanout ();
-  check_foreign_and_consumed_fail_closed ()
+  check_foreign_and_consumed_fail_closed ();
+  check_cancellation ()

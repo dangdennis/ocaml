@@ -55,6 +55,7 @@ enum caml_actor_failure {
   CAML_ACTOR_FAILURE_EXCEPTION,
   CAML_ACTOR_FAILURE_UNSUPPORTED,
   CAML_ACTOR_FAILURE_HEAP_EXHAUSTED,
+  CAML_ACTOR_FAILURE_CANCELLED,
   CAML_ACTOR_FAILURE_INVALID_HEAP,
   CAML_ACTOR_FAILURE_INVALID_RESULT,
   CAML_ACTOR_FAILURE_INTERNAL
@@ -110,6 +111,7 @@ enum caml_actor_monitor_status {
   CAML_ACTOR_MONITOR_STALE,
   CAML_ACTOR_MONITOR_PENDING,
   CAML_ACTOR_MONITOR_READY,
+  CAML_ACTOR_MONITOR_SELF,
   CAML_ACTOR_MONITOR_RESOURCE_UNAVAILABLE,
   CAML_ACTOR_MONITOR_INVALID_CONTEXT
 };
@@ -262,6 +264,8 @@ CAMLextern int caml_actor_scheduler_consume_exit(
   struct caml_actor_scheduler *scheduler, uintnat monitor_id);
 CAMLextern int caml_actor_scheduler_discard_monitor(
   struct caml_actor_scheduler *scheduler, uintnat monitor_id);
+CAMLextern enum caml_actor_monitor_status caml_actor_scheduler_cancel(
+  struct caml_actor_scheduler *scheduler, uintnat target_pid);
 
 CAMLextern struct caml_actor_step caml_actor_scheduler_step(
   struct caml_actor_scheduler *scheduler);

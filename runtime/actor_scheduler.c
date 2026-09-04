@@ -459,6 +459,25 @@ static uint32_t dequeue_head(struct caml_actor_scheduler *scheduler)
   return index;
 }
 
+static int remove_ready(struct caml_actor_scheduler *scheduler,
+                        uint32_t index)
+{
+  uint32_t *link = &scheduler->ready_head;
+  uint32_t previous = ACTOR_SLOT_NONE;
+  struct caml_actor_slot *slot = &scheduler->slots[index];
+
+  while (*link != ACTOR_SLOT_NONE && *link != index) {
+    previous = *link;
+    link = &scheduler->slots[*link].ready_next;
+  }
+  if (*link == ACTOR_SLOT_NONE) return 0;
+  *link = slot->ready_next;
+  if (scheduler->ready_tail == index) scheduler->ready_tail = previous;
+  slot->ready_next = ACTOR_SLOT_NONE;
+  slot->queued = 0;
+  return 1;
+}
+
 static void release_slot_resources(struct caml_actor_slot *slot)
 {
   struct caml_actor_prepared_send *message = slot->mailbox_head;
@@ -1027,6 +1046,16 @@ struct caml_actor_step caml_actor_scheduler_step(
     step.reason = CAML_ACTOR_STEP_HOST_ACTION;
     return step;
   }
+  for (uint32_t pending = 0; pending < scheduler->capacity; pending++) {
+    const struct caml_actor_slot *candidate = &scheduler->slots[pending];
+
+    if (candidate->lifecycle == CAML_ACTOR_LIFECYCLE_FAILED
+        && candidate->failure == CAML_ACTOR_FAILURE_CANCELLED) {
+      step.pid = candidate->pid;
+      step.reason = CAML_ACTOR_STEP_FAILED;
+      return step;
+    }
+  }
   index = dequeue_head(scheduler);
   if (index == ACTOR_SLOT_NONE) return step;
   slot = &scheduler->slots[index];
@@ -1474,6 +1503,34 @@ int caml_actor_scheduler_discard_monitor(
     scheduler, monitor_id, scheduler->slots[scheduler->current].pid);
 }
 
+enum caml_actor_monitor_status caml_actor_scheduler_cancel(
+  struct caml_actor_scheduler *scheduler, uintnat target_pid)
+{
+  const struct caml_actor_slot *target;
+  struct caml_actor_slot *mutable_target;
+  enum caml_actor_pid_lookup lookup;
+  uint32_t index;
+
+  if (!running_context_matches(scheduler)) {
+    return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+  }
+  lookup = lookup_slot(scheduler, target_pid, &target);
+  if (lookup == CAML_ACTOR_PID_STALE) return CAML_ACTOR_MONITOR_STALE;
+  if (lookup != CAML_ACTOR_PID_PRESENT || !slot_accepts_messages(target)) {
+    return CAML_ACTOR_MONITOR_MISSING;
+  }
+  index = (uint32_t)(target_pid & CAML_ACTOR_PID_INDEX_MASK);
+  if (index == scheduler->current) return CAML_ACTOR_MONITOR_SELF;
+  mutable_target = &scheduler->slots[index];
+  if (mutable_target->queued && !remove_ready(scheduler, index)) {
+    return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+  }
+  mutable_target->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
+  mutable_target->failure = CAML_ACTOR_FAILURE_CANCELLED;
+  increment_counter(&scheduler->total_failed);
+  return CAML_ACTOR_MONITOR_OK;
+}
+
 enum caml_actor_pid_lookup caml_actor_scheduler_snapshot(
   const struct caml_actor_scheduler *scheduler, uintnat pid,
   struct caml_actor_snapshot *snapshot)
@@ -1632,6 +1689,9 @@ static struct caml_actor_exit_reason exit_reason_for_slot(
     break;
   case CAML_ACTOR_FAILURE_HEAP_EXHAUSTED:
     reason.kind = CAML_ACTOR_EXIT_HEAP_LIMIT;
+    break;
+  case CAML_ACTOR_FAILURE_CANCELLED:
+    reason.kind = CAML_ACTOR_EXIT_CANCELLED;
     break;
   case CAML_ACTOR_FAILURE_UNSUPPORTED:
     reason.kind = CAML_ACTOR_EXIT_UNSUPPORTED;
@@ -2053,6 +2113,14 @@ enum caml_actor_monitor_status caml_actor_scheduler_peek_exit(
   (void)scheduler;
   (void)monitor_id;
   (void)reason;
+  return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+}
+
+enum caml_actor_monitor_status caml_actor_scheduler_cancel(
+  struct caml_actor_scheduler *scheduler, uintnat target_pid)
+{
+  (void)scheduler;
+  (void)target_pid;
   return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
 }
 

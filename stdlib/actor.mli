@@ -52,6 +52,8 @@ type exit_reason =
 
 type monitor_error = Monitor_missing | Monitor_stale
 
+type cancel_error = Cancel_missing | Cancel_stale | Cancel_self
+
 type heap_limits = {
   initial_words : int;
   maximum_words : int;
@@ -162,6 +164,14 @@ val monitor : _ pid -> (monitor, monitor_error) result
     reason for the current generation of [pid]. Dead empty slots report
     [Monitor_missing]; mismatched or retired generations report
     [Monitor_stale]. *)
+
+val cancel : _ pid -> (unit, cancel_error) result
+(** [cancel pid] requests deterministic termination of the current generation
+    of [pid]. The target cannot run again after a successful request and its
+    monitors receive [Cancelled] through the ordinary exit boundary. Dead
+    empty slots report [Cancel_missing] and mismatched or retired generations
+    report [Cancel_stale]. Cancelling the calling actor reports [Cancel_self]
+    rather than destroying its active heap. *)
 
 external self : 'message inbox -> 'message pid
   = "caml_actor_self"

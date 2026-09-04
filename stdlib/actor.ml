@@ -31,6 +31,7 @@ type exit_reason =
   | Runtime_failure of string
 
 type monitor_error = Monitor_missing | Monitor_stale
+type cancel_error = Cancel_missing | Cancel_stale | Cancel_self
 
 type heap_limits = {
   initial_words : int;
@@ -160,6 +161,14 @@ external monitor_request : 'message monitor_request ->
   = "caml_actor_spawn"
 
 let monitor pid = monitor_request (0, pid)
+
+type 'message cancel_request = int * 'message pid
+
+external cancel_request : 'message cancel_request ->
+  (unit, cancel_error) result
+  = "caml_actor_spawn"
+
+let cancel pid = cancel_request (1, pid)
 
 external self : 'message inbox -> 'message pid
   = "caml_actor_self"
