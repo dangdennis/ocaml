@@ -57,6 +57,7 @@ part of the current roadmap.
 | Layer 9: frozen global reads | `actor-real/09-frozen-global-reads`, PR #12 | Published draft and Layer 10 base |
 | Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | Complete and published as a stacked draft |
 | Layer 11: elastic heaps and configurable limits | `actor-real/11-elastic-heaps`, PR #14 | Complete and published as a stacked draft |
+| Layer 12: structured exits and monitors | `actor-real/12-structured-exits`, PR #15 | Complete and published as a stacked draft |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -320,13 +321,24 @@ supervision, timers, and general wait sets remain outside this layer.
       truncation metadata.
 - [x] Add explicit cancellation and the `Cancelled` exit reason.
 - [x] Bound monitor resources and expose deterministic observability.
-- [ ] Pass race, cleanup, PID-reuse, sanitizer, package, benchmark, hygiene,
+- [x] Pass race, cleanup, PID-reuse, sanitizer, package, benchmark, hygiene,
       and fresh-runner gates and publish the stacked Layer 12 draft.
+
+### Validation checkpoint
+
+Layer 12 closed at implementation tip `ec426ba24b`. The local normal, debug,
+and instrumented actor suites each passed 27 tests with one expected platform
+skip. The tooling suites, benchmark smoke, pinned Astring package canary, and
+relevant callback, backtrace, and effects suites passed. Fresh-runner Actor
+Runtime (`33889703717`), Hygiene (`33889703619`), full Build (`33889703777`),
+and MSVC (`33889703695`) workflows passed at that exact tip: 35 checks passed
+and eight platform- or event-specific checks skipped as expected.
 
 ### Current next action
 
-Re-run the complete sanitizer, package, benchmark, hygiene, and fresh-runner
-gates at the Layer 12 implementation tip.
+Begin Layer 13 with a red one-for-one supervision contract built only on the
+published monitor and cancellation boundaries. Keep restart ordering and
+resource limits explicit; do not add links or trap-exit semantics implicitly.
 
 ## Layer 13: supervision
 
