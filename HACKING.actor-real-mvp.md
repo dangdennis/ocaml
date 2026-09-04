@@ -100,6 +100,13 @@ the target heap and advancing its PID generation. Cancelling the active actor
 is a recoverable `Cancel_self` error, so the primitive never destroys its own
 heap underneath the interpreter.
 
+Monitor allocation is bounded by `world_config.max_monitors`, with the
+existing default fixed at 65,536 records. A full scheduler-owned monitor
+table returns `Monitor_limit` before allocation and increments a saturating
+quota-failure counter. `Actor.stats` reports current, peak, failed, and limit
+values; consumption, allocation rollback, and watcher retirement decrement
+the current count exactly once.
+
 ## Limits
 
 The current Layer 11 public configuration shape is:
@@ -118,6 +125,7 @@ type world_config = {
   max_message_words : int;
   max_mailbox_messages : int;
   max_mailbox_bytes : int;
+  max_monitors : int;
 }
 
 val default_world_config : world_config

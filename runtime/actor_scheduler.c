@@ -154,6 +154,7 @@ struct caml_actor_scheduler {
   mlsize_t message_quota_words;
   uintnat mailbox_message_limit;
   uintnat mailbox_byte_limit;
+  uintnat monitor_limit;
   struct caml_actor_slot *slots;
   uint32_t ready_head;
   uint32_t ready_tail;
@@ -173,6 +174,9 @@ struct caml_actor_scheduler {
   uintnat mailbox_messages;
   uintnat mailbox_bytes;
   uintnat mailbox_quota_failures;
+  uintnat monitor_count;
+  uintnat peak_monitor_count;
+  uintnat monitor_quota_failures;
 
   uintnat next_monitor_id;
   struct caml_actor_monitor *monitors;
@@ -549,13 +553,29 @@ static int scheduler_mailboxes_valid(
     && total_messages <= scheduler->mailbox_message_limit
     && total_bytes <= scheduler->mailbox_byte_limit;
 }
+
+static int scheduler_monitors_valid(
+  const struct caml_actor_scheduler *scheduler)
+{
+  uintnat count = 0;
+
+  for (const struct caml_actor_monitor *monitor = scheduler->monitors;
+       monitor != NULL; monitor = monitor->next) {
+    if (monitor->id == 0 || count == CAML_UINTNAT_MAX) return 0;
+    count++;
+  }
+  return count == scheduler->monitor_count
+    && count <= scheduler->monitor_limit
+    && scheduler->peak_monitor_count >= count
+    && scheduler->peak_monitor_count <= scheduler->monitor_limit;
+}
 #endif
 
 struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   uintnat capacity, uintnat reduction_budget,
   mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words,
   mlsize_t message_quota_words, uintnat mailbox_message_limit,
-  uintnat mailbox_byte_limit)
+  uintnat mailbox_byte_limit, uintnat monitor_limit)
 {
   caml_domain_state *domain = Caml_state_opt;
   struct caml_actor_scheduler *scheduler;
@@ -571,6 +591,7 @@ struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
       || child_initial_heap_words > child_maximum_heap_words
       || message_quota_words == 0
       || mailbox_message_limit == 0 || mailbox_byte_limit == 0
+      || monitor_limit == 0
       || capacity > SIZE_MAX / sizeof(*slots)) {
     return NULL;
   }
@@ -592,6 +613,7 @@ struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   scheduler->message_quota_words = message_quota_words;
   scheduler->mailbox_message_limit = mailbox_message_limit;
   scheduler->mailbox_byte_limit = mailbox_byte_limit;
+  scheduler->monitor_limit = monitor_limit;
   scheduler->slots = slots;
   scheduler->ready_head = ACTOR_SLOT_NONE;
   scheduler->ready_tail = ACTOR_SLOT_NONE;
@@ -621,7 +643,7 @@ struct caml_actor_scheduler *caml_actor_scheduler_create(
 {
   return caml_actor_scheduler_create_configured(
     capacity, reduction_budget, 1, 1, 1,
-    CAML_UINTNAT_MAX, CAML_UINTNAT_MAX);
+    CAML_UINTNAT_MAX, CAML_UINTNAT_MAX, CAML_UINTNAT_MAX);
 }
 
 void caml_actor_scheduler_destroy(struct caml_actor_scheduler *scheduler)
@@ -643,9 +665,12 @@ void caml_actor_scheduler_destroy(struct caml_actor_scheduler *scheduler)
   while (monitor != NULL) {
     struct caml_actor_monitor *next = monitor->next;
 
+    CAMLassert(scheduler->monitor_count > 0);
+    scheduler->monitor_count--;
     free(monitor);
     monitor = next;
   }
+  CAMLassert(scheduler->monitor_count == 0);
   scheduler->domain->actor_scheduler = NULL;
   free(scheduler->slots);
   free(scheduler);
@@ -1425,6 +1450,10 @@ enum caml_actor_monitor_status caml_actor_scheduler_monitor(
       || scheduler->next_monitor_id > (uintnat)Max_long) {
     return CAML_ACTOR_MONITOR_RESOURCE_UNAVAILABLE;
   }
+  if (scheduler->monitor_count >= scheduler->monitor_limit) {
+    increment_counter(&scheduler->monitor_quota_failures);
+    return CAML_ACTOR_MONITOR_LIMIT;
+  }
   monitor = calloc(1, sizeof(*monitor));
   if (monitor == NULL) return CAML_ACTOR_MONITOR_RESOURCE_UNAVAILABLE;
   monitor->id = scheduler->next_monitor_id++;
@@ -1432,6 +1461,13 @@ enum caml_actor_monitor_status caml_actor_scheduler_monitor(
   monitor->target_pid = target_pid;
   monitor->next = scheduler->monitors;
   scheduler->monitors = monitor;
+  increment_counter(&scheduler->monitor_count);
+  if (scheduler->monitor_count > scheduler->peak_monitor_count) {
+    scheduler->peak_monitor_count = scheduler->monitor_count;
+  }
+#ifdef DEBUG
+  CAMLassert(scheduler_monitors_valid(scheduler));
+#endif
   *monitor_id = monitor->id;
   return CAML_ACTOR_MONITOR_OK;
 }
@@ -1478,7 +1514,12 @@ static int remove_monitor(struct caml_actor_scheduler *scheduler,
   if (link == NULL) return 0;
   monitor = *link;
   *link = monitor->next;
+  CAMLassert(scheduler->monitor_count > 0);
+  scheduler->monitor_count--;
   free(monitor);
+#ifdef DEBUG
+  CAMLassert(scheduler_monitors_valid(scheduler));
+#endif
   return 1;
 }
 
@@ -1585,6 +1626,10 @@ int caml_actor_scheduler_stats(
   stats->message_word_limit = scheduler->message_quota_words;
   stats->mailbox_message_limit = scheduler->mailbox_message_limit;
   stats->mailbox_byte_limit = scheduler->mailbox_byte_limit;
+  stats->monitors = scheduler->monitor_count;
+  stats->peak_monitors = scheduler->peak_monitor_count;
+  stats->monitor_quota_failures = scheduler->monitor_quota_failures;
+  stats->monitor_limit = scheduler->monitor_limit;
 
   for (uintnat index = 0; index < scheduler->capacity; index++) {
     const struct caml_actor_slot *slot = &scheduler->slots[index];
@@ -1743,8 +1788,13 @@ static void discard_watcher_monitors(
       continue;
     }
     *link = monitor->next;
+    CAMLassert(scheduler->monitor_count > 0);
+    scheduler->monitor_count--;
     free(monitor);
   }
+#ifdef DEBUG
+  CAMLassert(scheduler_monitors_valid(scheduler));
+#endif
 }
 
 int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,

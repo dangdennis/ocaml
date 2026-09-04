@@ -24,6 +24,7 @@ let monitor_or_fail pid =
   | Ok monitor -> monitor
   | Error Actor.Monitor_missing -> failwith "monitor missing"
   | Error Actor.Monitor_stale -> failwith "monitor stale"
+  | Error Actor.Monitor_limit -> failwith "monitor limit"
 
 let cancel_or_fail pid =
   match Actor.cancel pid with
