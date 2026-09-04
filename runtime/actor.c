@@ -157,6 +157,20 @@ static value actor_monitor_error(enum caml_actor_monitor_status status)
   return actor_alloc_one(1, detail); /* Error */
 }
 
+static value actor_cancel_error(enum caml_actor_monitor_status status)
+{
+  value detail;
+
+  if (status == CAML_ACTOR_MONITOR_STALE) {
+    detail = Val_int(1); /* Cancel_stale */
+  } else if (status == CAML_ACTOR_MONITOR_SELF) {
+    detail = Val_int(2); /* Cancel_self */
+  } else {
+    detail = Val_int(0); /* Cancel_missing */
+  }
+  return actor_alloc_one(1, detail); /* Error */
+}
+
 static value actor_exit_reason(
   const struct caml_actor_exit_reason *reason)
 {
@@ -255,6 +269,9 @@ static enum actor_run_outcome root_failure_outcome(
     } else {
       *message = "unsupported operation in root actor";
     }
+    break;
+  case CAML_ACTOR_FAILURE_CANCELLED:
+    *message = "root actor cancelled";
     break;
   case CAML_ACTOR_FAILURE_INVALID_HEAP:
     *message = "root actor heap invariant failed";
@@ -599,13 +616,45 @@ static value actor_monitor(value target_value)
 #endif
 }
 
+static value actor_cancel(value target_value)
+{
+#if defined(NATIVE_CODE)
+  (void)target_value;
+  caml_invalid_argument("Actor.cancel outside an actor world");
+#else
+  struct caml_actor_scheduler *scheduler = Caml_state->actor_scheduler;
+  enum caml_actor_monitor_status status;
+
+  if (!Is_long(target_value) || Long_val(target_value) < 0) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  status = caml_actor_scheduler_cancel(
+    scheduler, (uintnat)Long_val(target_value));
+  if (status == CAML_ACTOR_MONITOR_MISSING
+      || status == CAML_ACTOR_MONITOR_STALE
+      || status == CAML_ACTOR_MONITOR_SELF) {
+    return actor_cancel_error(status);
+  }
+  if (status != CAML_ACTOR_MONITOR_OK) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  return actor_alloc_one(0, Val_unit); /* Ok */
+#endif
+}
+
 CAMLprim value caml_actor_spawn(value request)
 {
 #if defined(NATIVE_CODE)
   if (Is_block(request) && Tag_val(request) == 0
-      && Wosize_val(request) == 2
-      && Is_long(Field(request, 0)) && Long_val(Field(request, 0)) == 0) {
-    caml_invalid_argument("Actor.monitor outside an actor world");
+      && Wosize_val(request) == 2 && Is_long(Field(request, 0))) {
+    if (Long_val(Field(request, 0)) == 0) {
+      caml_invalid_argument("Actor.monitor outside an actor world");
+    }
+    if (Long_val(Field(request, 0)) == 1) {
+      caml_invalid_argument("Actor.cancel outside an actor world");
+    }
   }
   return actor_spawn(request, 0, 0, 1);
 #else
@@ -618,9 +667,13 @@ CAMLprim value caml_actor_spawn(value request)
 
   if (!caml_actor_scheduler_is_running()) {
     if (Is_block(request) && Tag_val(request) == 0
-        && Wosize_val(request) == 2
-        && Is_long(Field(request, 0)) && Long_val(Field(request, 0)) == 0) {
-      caml_invalid_argument("Actor.monitor outside an actor world");
+        && Wosize_val(request) == 2 && Is_long(Field(request, 0))) {
+      if (Long_val(Field(request, 0)) == 0) {
+        caml_invalid_argument("Actor.monitor outside an actor world");
+      }
+      if (Long_val(Field(request, 0)) == 1) {
+        caml_invalid_argument("Actor.cancel outside an actor world");
+      }
     }
     caml_invalid_argument("Actor.spawn outside an actor world");
   }
@@ -629,11 +682,14 @@ CAMLprim value caml_actor_spawn(value request)
       && Tag_val(request) == 0 && Wosize_val(request) == 2) {
     if (!caml_actor_heap_read_field(request, 0, &operation)
         || !caml_actor_heap_read_field(request, 1, &closure)
-        || !Is_long(operation) || Long_val(operation) != 0) {
+        || !Is_long(operation)) {
       caml_actor_scheduler_request_unsupported();
       return Val_unit;
     }
-    return actor_monitor(closure);
+    if (Long_val(operation) == 0) return actor_monitor(closure);
+    if (Long_val(operation) == 1) return actor_cancel(closure);
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
   } else if (caml_actor_heap_owns_value(heap, request)
       && Tag_val(request) == 0 && Wosize_val(request) == 1) {
     if (!caml_actor_heap_read_field(request, 0, &closure)) {

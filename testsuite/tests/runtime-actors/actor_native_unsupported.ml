@@ -26,6 +26,8 @@ let () =
   let pid : unit Actor.pid = Obj.magic 0 in
   expect_invalid_argument "Actor.monitor outside an actor world"
     (fun () -> Actor.monitor pid);
+  expect_invalid_argument "Actor.cancel outside an actor world"
+    (fun () -> Actor.cancel pid);
   let monitor : Actor.monitor = Obj.magic (0, 1) in
   expect_invalid_argument "Actor.await_exit outside an actor world"
     (fun () -> Actor.await_exit monitor);

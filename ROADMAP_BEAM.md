@@ -318,15 +318,15 @@ supervision, timers, and general wait sets remain outside this layer.
       exactly once without touching typed user mailboxes.
 - [x] Capture bounded exception summaries and bytecode backtraces with explicit
       truncation metadata.
-- [ ] Add explicit cancellation and the `Cancelled` exit reason.
+- [x] Add explicit cancellation and the `Cancelled` exit reason.
 - [ ] Bound monitor resources and expose deterministic observability.
 - [ ] Pass race, cleanup, PID-reuse, sanitizer, package, benchmark, hygiene,
       and fresh-runner gates and publish the stacked Layer 12 draft.
 
 ### Current next action
 
-Add a red cancellation contract, then implement generation-checked actor
-cancellation and `Cancelled` delivery through the existing monitor boundary.
+Add a finite monitor quota to world configuration, then expose current and
+peak monitor counts plus deterministic quota failures through `Actor.stats`.
 
 ## Layer 13: supervision
 
