@@ -27,6 +27,31 @@ type 'message pid
 type 'message inbox
 (** The identity capability supplied to an actor entry function. *)
 
+type monitor
+(** A generation-safe scheduler capability for observing one actor exit. *)
+
+type backtrace = {
+  text : string;
+  truncated : bool;
+}
+(** Bounded bytecode backtrace text. [truncated] records an explicit size
+    limit rather than silently presenting incomplete data as complete. *)
+
+type exit_reason =
+  | Normal
+  | Uncaught_exception of { summary : string; backtrace : backtrace option }
+  | Heap_limit
+  | Mailbox_limit
+  | Cancelled
+  | Unsupported_operation of string
+  | Runtime_failure of string
+(** Pointer-free reason copied from scheduler-owned exit data into the
+    waiting actor's heap. [Mailbox_limit] is reserved for an actor-fatal
+    mailbox condition; a recoverable {!send} rejection does not terminate
+    its caller. *)
+
+type monitor_error = Monitor_missing | Monitor_stale
+
 type heap_limits = {
   initial_words : int;
   maximum_words : int;
@@ -132,6 +157,12 @@ val spawn_with_heap_limits : heap_limits -> ('message inbox -> unit) ->
 (** [spawn_with_heap_limits limits entry] overrides the configured child heap
     limits for one spawn. Invalid limits return [Error Initial_heap_limit]. *)
 
+val monitor : _ pid -> (monitor, monitor_error) result
+(** [monitor pid] registers the calling actor to receive exactly one exit
+    reason for the current generation of [pid]. Dead empty slots report
+    [Monitor_missing]; mismatched or retired generations report
+    [Monitor_stale]. *)
+
 external self : 'message inbox -> 'message pid
   = "caml_actor_self"
 (** [self inbox] returns the identity associated with [inbox]. *)
@@ -147,6 +178,11 @@ external receive : 'message inbox -> 'message
   = "caml_actor_receive"
 (** [receive inbox] returns the oldest message, blocking only the current
     actor while its mailbox is empty. *)
+
+val await_exit : monitor -> exit_reason
+(** [await_exit monitor] blocks only the calling actor until the monitored
+    actor exits. Exit events do not enter or reorder the typed user mailbox.
+    A forged, foreign, or already-consumed monitor fails closed. *)
 
 external yield : unit -> unit
   = "caml_actor_yield"

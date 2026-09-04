@@ -10,10 +10,10 @@ The MVP supports Linux x86-64, bytecode, one OS thread, and one runtime-owned
 scheduler. It provides private actor heaps, FIFO mailboxes, reduction-based
 preemption, and actor-local failure. It is not a security sandbox.
 
-Native code, multiple Domains, selective receive, links, monitors, timers,
-blocking I/O, distribution, arbitrary C stubs, effects, and finalizers are out
-of scope. Unsupported operations fail closed; they never silently use shared
-runtime state.
+Native code, multiple Domains, selective receive, links, timers, blocking I/O,
+distribution, arbitrary C stubs, effects, and finalizers are out of scope.
+Unsupported operations fail closed; they never silently use shared runtime
+state.
 
 ## API
 
@@ -25,6 +25,21 @@ the types or constructors below:
 module Actor : sig
   type 'message pid
   type 'message inbox
+  type monitor
+
+  type backtrace = { text : string; truncated : bool }
+  type exit_reason =
+    | Normal
+    | Uncaught_exception of {
+        summary : string;
+        backtrace : backtrace option;
+      }
+    | Heap_limit
+    | Mailbox_limit
+    | Cancelled
+    | Unsupported_operation of string
+    | Runtime_failure of string
+  type monitor_error = Monitor_missing | Monitor_stale
 
   type heap_limits = {
     initial_words : int;
@@ -97,6 +112,8 @@ module Actor : sig
     ('message pid, spawn_error) result
   val spawn_with_heap_limits : heap_limits ->
     ('message inbox -> unit) -> ('message pid, spawn_error) result
+  val monitor : _ pid -> (monitor, monitor_error) result
+  val await_exit : monitor -> exit_reason
   val self : 'message inbox -> 'message pid
   val send : 'message pid -> 'message -> (unit, send_error) result
   val receive : 'message inbox -> 'message
@@ -147,6 +164,17 @@ once. Both limits are checked before send preparation and again at commit.
 Quota rejection links no envelope, changes no mailbox gauge, and does not wake
 a blocked receiver. Receiving or retiring an actor releases the corresponding
 message and byte charges.
+
+Layer 12 monitor registration also reuses `caml_actor_spawn/1`, while
+`await_exit` reuses the retryable `caml_actor_receive/1` boundary. Monitor
+records contain only generation-tagged integer identities and pointer-free
+exit metadata owned by the scheduler. An exit wakes a blocked watcher without
+placing a value in its typed FIFO mailbox. The public reason is allocated only
+in the waiting actor's heap and each monitor can be consumed exactly once.
+Missing and stale PIDs remain distinct and a retired PID can never retarget a
+monitor after slot reuse. Recoverable mailbox quota rejection remains a
+`send` error and does not terminate its caller; `Mailbox_limit` is reserved
+for an actor-fatal mailbox condition.
 
 ## Execution semantics
 

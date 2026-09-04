@@ -14,6 +14,23 @@
 
 type 'message pid = int
 type 'message inbox = int
+type monitor = int * int
+
+type backtrace = {
+  text : string;
+  truncated : bool;
+}
+
+type exit_reason =
+  | Normal
+  | Uncaught_exception of { summary : string; backtrace : backtrace option }
+  | Heap_limit
+  | Mailbox_limit
+  | Cancelled
+  | Unsupported_operation of string
+  | Runtime_failure of string
+
+type monitor_error = Monitor_missing | Monitor_stale
 
 type heap_limits = {
   initial_words : int;
@@ -136,6 +153,14 @@ let spawn_with_heap_limits limits entry =
   spawn_request
     (limits.initial_words, limits.maximum_words, entry)
 
+type 'message monitor_request = int * 'message pid
+
+external monitor_request : 'message monitor_request ->
+  (monitor, monitor_error) result
+  = "caml_actor_spawn"
+
+let monitor pid = monitor_request (0, pid)
+
 external self : 'message inbox -> 'message pid
   = "caml_actor_self"
 
@@ -144,6 +169,9 @@ external send : 'message pid -> 'message ->
   = "caml_actor_send"
 
 external receive : 'message inbox -> 'message
+  = "caml_actor_receive"
+
+external await_exit : monitor -> exit_reason
   = "caml_actor_receive"
 
 external yield : unit -> unit
