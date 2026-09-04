@@ -176,6 +176,15 @@ monitor after slot reuse. Recoverable mailbox quota rejection remains a
 `send` error and does not terminate its caller; `Mailbox_limit` is reserved
 for an actor-fatal mailbox condition.
 
+Before freezing the host world, actor entry loads any bytecode debug table
+into runtime-owned C metadata. Exception unwinding then records at most 32
+code slots in the failing actor's scheduler slot without changing the
+Domain's ordinary backtrace root. Before retirement those slots become a
+bounded UTF-8 text trace of at most 2,047 bytes. The public trace records
+whether either the frame or text bound truncated it; executables without
+usable debug locations return `None`. Exception summaries are independently
+bounded to 255 bytes and repaired to a complete UTF-8 prefix.
+
 ## Execution semantics
 
 - `Actor.run` suspends the host bytecode computation and starts actor 0.

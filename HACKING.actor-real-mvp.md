@@ -85,6 +85,13 @@ the requests to scheduler-owned monitor records. A recoverable mailbox quota
 rejection is still a `send` result, not an actor exit; `Mailbox_limit` remains
 reserved until an actor-fatal mailbox condition has an explicit contract.
 
+Actor entry eagerly converts the executable's bytecode debug section to
+runtime-owned C metadata before the host world freezes. Actor exception
+unwinding uses a scheduler-slot buffer rather than the Domain backtrace buffer
+and never stores an actor exception in the Domain's generational global root.
+At most 32 frames and 2,047 UTF-8 text bytes are retained, with explicit
+truncation in the public backtrace record. No-debug executables return `None`.
+
 ## Limits
 
 The current Layer 11 public configuration shape is:

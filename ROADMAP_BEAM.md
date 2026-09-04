@@ -316,7 +316,7 @@ supervision, timers, and general wait sets remain outside this layer.
       names or foreign-heap reads.
 - [x] Deliver normal, exception, heap-limit, and unsupported-operation exits
       exactly once without touching typed user mailboxes.
-- [ ] Capture bounded exception summaries and bytecode backtraces with explicit
+- [x] Capture bounded exception summaries and bytecode backtraces with explicit
       truncation metadata.
 - [ ] Add explicit cancellation and the `Cancelled` exit reason.
 - [ ] Bound monitor resources and expose deterministic observability.
@@ -325,8 +325,8 @@ supervision, timers, and general wait sets remain outside this layer.
 
 ### Current next action
 
-Audit and publish the initial monitor/exit-delivery slice, then add a red test
-for bounded bytecode exception backtraces captured before heap retirement.
+Add a red cancellation contract, then implement generation-checked actor
+cancellation and `Cancelled` delivery through the existing monitor boundary.
 
 ## Layer 13: supervision
 

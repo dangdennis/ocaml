@@ -1,4 +1,5 @@
 (* TEST
+ flags = "-g";
  {
    linux;
    arch_amd64;
@@ -28,6 +29,41 @@ let rec retain_live n retained =
   if n = 0 then retained
   else retain_live (n - 1) (n :: retained)
 
+let rec explode depth =
+  if depth = 0 then raise (Failure "deep monitor boom")
+  else 1 + explode (depth - 1)
+
+let rec repeat_utf8 count text =
+  if count = 0 then text
+  else repeat_utf8 (count - 1) ("\195\169" ^ text)
+
+let long_utf8 = repeat_utf8 150 ""
+
+let valid_utf8 text =
+  let length = String.length text in
+  let rec loop offset =
+    if offset = length then true
+    else
+      let lead = Char.code text.[offset] in
+      let width =
+        if lead < 0x80 then 1
+        else if lead >= 0xc2 && lead <= 0xdf then 2
+        else if lead >= 0xe0 && lead <= 0xef then 3
+        else if lead >= 0xf0 && lead <= 0xf4 then 4
+        else 0
+      in
+      if width = 0 || offset + width > length then false
+      else
+        let rec continuations index =
+          if index = width then loop (offset + width)
+          else
+            let byte = Char.code text.[offset + index] in
+            byte land 0xc0 = 0x80 && continuations (index + 1)
+        in
+        continuations 1
+  in
+  loop 0
+
 let expect_normal = function
   | Actor.Normal -> ()
   | _ -> failwith "expected normal exit"
@@ -47,11 +83,30 @@ let check_normal_and_fifo () =
 
 let check_failures () =
   require_ok "failures" (Actor.run (fun _ ->
-    let failed = spawn_or_fail (fun _ -> raise Exit) in
+    let failed = spawn_or_fail (fun _ -> raise (Failure "monitor boom")) in
     begin match Actor.await_exit (monitor_or_fail failed) with
-    | Actor.Uncaught_exception { summary; backtrace = None } ->
-        assert (summary = "uncaught actor exception")
+    | Actor.Uncaught_exception { summary; backtrace = Some backtrace } ->
+        assert (summary = "Failure(\"monitor boom\")");
+        assert (String.length backtrace.text > 0);
+        assert (not backtrace.truncated)
     | _ -> failwith "expected exception exit"
+    end;
+
+    let deep = spawn_or_fail (fun _ -> ignore (explode 80)) in
+    begin match Actor.await_exit (monitor_or_fail deep) with
+    | Actor.Uncaught_exception { summary; backtrace = Some backtrace } ->
+        assert (summary = "Failure(\"deep monitor boom\")");
+        assert (String.length backtrace.text > 0);
+        assert backtrace.truncated
+    | _ -> failwith "expected truncated exception backtrace"
+    end;
+
+    let utf8 = spawn_or_fail (fun _ -> raise (Failure long_utf8)) in
+    begin match Actor.await_exit (monitor_or_fail utf8) with
+    | Actor.Uncaught_exception { summary; _ } ->
+        assert (String.length summary <= 255);
+        assert (valid_utf8 summary)
+    | _ -> failwith "expected bounded UTF-8 exception summary"
     end;
 
     let exhausted = spawn_or_fail (fun _ ->
