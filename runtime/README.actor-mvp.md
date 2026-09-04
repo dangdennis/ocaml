@@ -185,6 +185,15 @@ whether either the frame or text bound truncated it; executables without
 usable debug locations return `None`. Exception summaries are independently
 bounded to 255 bytes and repaired to a complete UTF-8 prefix.
 
+Cancellation uses a two-field request over the existing spawn primitive, so
+it does not add a bootstrap-visible runtime name. The scheduler validates the
+target generation, removes a runnable target from the ready queue (or marks a
+blocked target terminal), and reports the cancellation before the next actor
+dispatch. The normal retirement boundary then publishes `Cancelled`, drops
+queued messages, destroys the target heap, and advances its PID generation.
+Self-cancellation returns `Cancel_self`; it never destroys the active actor
+heap beneath the bytecode interpreter.
+
 ## Execution semantics
 
 - `Actor.run` suspends the host bytecode computation and starts actor 0.

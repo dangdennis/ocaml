@@ -92,6 +92,14 @@ and never stores an actor exception in the Domain's generational global root.
 At most 32 frames and 2,047 UTF-8 text bytes are retained, with explicit
 truncation in the public backtrace record. No-debug executables return `None`.
 
+`Actor.cancel` is a generation-checked scheduler operation. Successful
+cancellation removes a runnable target from the ready queue or terminates a
+blocked target before the scheduler can dispatch another actor. The ordinary
+retirement path publishes `Cancelled` to existing monitors before destroying
+the target heap and advancing its PID generation. Cancelling the active actor
+is a recoverable `Cancel_self` error, so the primitive never destroys its own
+heap underneath the interpreter.
+
 ## Limits
 
 The current Layer 11 public configuration shape is:
