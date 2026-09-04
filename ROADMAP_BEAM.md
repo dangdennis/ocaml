@@ -283,6 +283,51 @@ unsupported operation, killed actor, and scheduler/resource failures. Monitor
 delivery must tolerate stale PIDs and races without reviving identities or
 leaking actor-owned data.
 
+### Design boundary
+
+Monitor records are scheduler-owned and contain only generation-tagged
+integer identities and bounded pointer-free exit metadata. Exit publication
+happens before target retirement destroys the actor heap or advances its PID
+generation. `await_exit` allocates the public reason only in the waiting
+actor's heap and never consumes or reorders its typed FIFO mailbox.
+
+Recoverable mailbox quota rejection remains a `send` error and does not kill
+the caller. `Mailbox_limit` is reserved until an actor-fatal mailbox condition
+has an explicit executable contract. Links, trap exits, selective receive,
+supervision, timers, and general wait sets remain outside this layer.
+
+### Work sequence
+
+1. Add generation-safe monitor registration and pointer-free exit records.
+2. Deliver normal and existing contained failure reasons exactly once through
+   a dedicated scheduler control boundary.
+3. Capture bounded exception summaries and bytecode backtrace text before
+   target heap retirement.
+4. Add explicit actor cancellation without links or asynchronous user values.
+5. Bound monitor resources, expose deterministic counters, and stress cleanup
+   and PID reuse.
+6. Re-run the full Layer 11 compatibility, sanitizer, benchmark, package, and
+   fresh-runner gates before publishing the completed layer.
+
+### Milestone tracker
+
+- [x] Add the public structured reason, monitor, and `await_exit` contract.
+- [x] Register generation-safe scheduler-owned monitors without new primitive
+      names or foreign-heap reads.
+- [x] Deliver normal, exception, heap-limit, and unsupported-operation exits
+      exactly once without touching typed user mailboxes.
+- [ ] Capture bounded exception summaries and bytecode backtraces with explicit
+      truncation metadata.
+- [ ] Add explicit cancellation and the `Cancelled` exit reason.
+- [ ] Bound monitor resources and expose deterministic observability.
+- [ ] Pass race, cleanup, PID-reuse, sanitizer, package, benchmark, hygiene,
+      and fresh-runner gates and publish the stacked Layer 12 draft.
+
+### Current next action
+
+Audit and publish the initial monitor/exit-delivery slice, then add a red test
+for bounded bytecode exception backtraces captured before heap retirement.
+
 ## Layer 13: supervision
 
 Build supervision on monitors rather than special scheduler shortcuts:

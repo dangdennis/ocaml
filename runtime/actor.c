@@ -75,6 +75,19 @@ static value actor_alloc_one(tag_t tag, value field)
   CAMLreturn(block);
 }
 
+static value actor_alloc_two(tag_t tag, value first, value second)
+{
+  CAMLparam2(first, second);
+  CAMLlocal1(block);
+
+  block = actor_try_alloc(2, tag);
+  if (block != 0) {
+    Field(block, 0) = first;
+    Field(block, 1) = second;
+  }
+  CAMLreturn(block);
+}
+
 static value actor_copy_string(const char *text)
 {
   mlsize_t length = strlen(text);
@@ -132,6 +145,67 @@ static value actor_send_error(int kind, const char *text)
     if (detail == 0) CAMLreturn(0);
   }
   CAMLreturn(actor_alloc_one(1, detail)); /* Error */
+}
+
+static value actor_monitor_error(enum caml_actor_monitor_status status)
+{
+  value detail = status == CAML_ACTOR_MONITOR_STALE
+    ? Val_int(1) /* Monitor_stale */
+    : Val_int(0); /* Monitor_missing */
+
+  return actor_alloc_one(1, detail); /* Error */
+}
+
+static value actor_exit_reason(
+  const struct caml_actor_exit_reason *reason)
+{
+  CAMLparam0();
+  CAMLlocal2(detail, text);
+  char message[160];
+
+  switch (reason->kind) {
+  case CAML_ACTOR_EXIT_NORMAL:
+    CAMLreturn(Val_int(0)); /* Normal */
+  case CAML_ACTOR_EXIT_EXCEPTION:
+    text = actor_copy_string("uncaught actor exception");
+    if (text == 0) CAMLreturn(0);
+    detail = actor_alloc_two(0, text, Val_int(0));
+    CAMLreturn(detail); /* Uncaught_exception */
+  case CAML_ACTOR_EXIT_HEAP_LIMIT:
+    CAMLreturn(Val_int(1)); /* Heap_limit */
+  case CAML_ACTOR_EXIT_MAILBOX_LIMIT:
+    CAMLreturn(Val_int(2)); /* Mailbox_limit */
+  case CAML_ACTOR_EXIT_CANCELLED:
+    CAMLreturn(Val_int(3)); /* Cancelled */
+  case CAML_ACTOR_EXIT_UNSUPPORTED:
+    if (reason->unsupported.kind == CAML_ACTOR_UNSUPPORTED_OPCODE) {
+      const char *name = reason->unsupported.operation
+          < FIRST_UNIMPLEMENTED_OP
+        ? names_of_instructions[reason->unsupported.operation]
+        : "UNKNOWN";
+
+      snprintf(message, sizeof(message),
+               "unsupported operation at opcode %s", name);
+    } else if (reason->unsupported.kind
+                 == CAML_ACTOR_UNSUPPORTED_PRIMITIVE) {
+      const char *name = reason->unsupported.operation
+          < (uintnat)caml_prim_name_table.size
+        ? caml_prim_name_table.contents[reason->unsupported.operation]
+        : "unknown";
+
+      snprintf(message, sizeof(message), "unsupported primitive %s/%d",
+               name, reason->unsupported.arity);
+    } else {
+      snprintf(message, sizeof(message), "unsupported actor operation");
+    }
+    text = actor_copy_string(message);
+    if (text == 0) CAMLreturn(0);
+    CAMLreturn(actor_alloc_one(1, text)); /* Unsupported_operation */
+  default:
+    text = actor_copy_string("actor runtime failure");
+    if (text == 0) CAMLreturn(0);
+    CAMLreturn(actor_alloc_one(2, text)); /* Runtime_failure */
+  }
 }
 
 static enum actor_run_outcome root_failure_outcome(
@@ -471,22 +545,82 @@ static value actor_spawn(value closure, mlsize_t initial_heap_words,
 #endif
 }
 
+static value actor_monitor(value target_value)
+{
+#if defined(NATIVE_CODE)
+  (void)target_value;
+  caml_invalid_argument("Actor.monitor outside an actor world");
+#else
+  struct caml_actor_scheduler *scheduler = Caml_state->actor_scheduler;
+  enum caml_actor_monitor_status status;
+  uintnat monitor_id;
+  value token;
+  value result;
+
+  if (!Is_long(target_value) || Long_val(target_value) < 0) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  status = caml_actor_scheduler_monitor(
+    scheduler, (uintnat)Long_val(target_value), &monitor_id);
+  if (status == CAML_ACTOR_MONITOR_MISSING
+      || status == CAML_ACTOR_MONITOR_STALE) {
+    return actor_monitor_error(status);
+  }
+  if (status != CAML_ACTOR_MONITOR_OK) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  token = actor_alloc_two(0, Val_int(0), Val_long(monitor_id));
+  if (token == 0) {
+    caml_actor_scheduler_discard_monitor(scheduler, monitor_id);
+    return Val_unit;
+  }
+  result = actor_alloc_one(0, token); /* Ok */
+  if (result == 0) {
+    caml_actor_scheduler_discard_monitor(scheduler, monitor_id);
+    return Val_unit;
+  }
+  return result;
+#endif
+}
+
 CAMLprim value caml_actor_spawn(value request)
 {
 #if defined(NATIVE_CODE)
+  if (Is_block(request) && Tag_val(request) == 0
+      && Wosize_val(request) == 2
+      && Is_long(Field(request, 0)) && Long_val(Field(request, 0)) == 0) {
+    caml_invalid_argument("Actor.monitor outside an actor world");
+  }
   return actor_spawn(request, 0, 0, 1);
 #else
   struct caml_actor_heap *heap;
   value closure = request;
   value initial = Val_unit;
   value maximum = Val_unit;
+  value operation = Val_unit;
   int use_default = 1;
 
   if (!caml_actor_scheduler_is_running()) {
+    if (Is_block(request) && Tag_val(request) == 0
+        && Wosize_val(request) == 2
+        && Is_long(Field(request, 0)) && Long_val(Field(request, 0)) == 0) {
+      caml_invalid_argument("Actor.monitor outside an actor world");
+    }
     caml_invalid_argument("Actor.spawn outside an actor world");
   }
   heap = caml_actor_heap_current();
   if (caml_actor_heap_owns_value(heap, request)
+      && Tag_val(request) == 0 && Wosize_val(request) == 2) {
+    if (!caml_actor_heap_read_field(request, 0, &operation)
+        || !caml_actor_heap_read_field(request, 1, &closure)
+        || !Is_long(operation) || Long_val(operation) != 0) {
+      caml_actor_scheduler_request_unsupported();
+      return Val_unit;
+    }
+    return actor_monitor(closure);
+  } else if (caml_actor_heap_owns_value(heap, request)
       && Tag_val(request) == 0 && Wosize_val(request) == 1) {
     if (!caml_actor_heap_read_field(request, 0, &closure)) {
       caml_actor_scheduler_request_unsupported();
@@ -670,10 +804,55 @@ CAMLprim value caml_actor_send(value pid_value, value message)
 #endif
 }
 
+static value actor_await_exit(value monitor)
+{
+  struct caml_actor_scheduler *scheduler = Caml_state->actor_scheduler;
+  struct caml_actor_exit_reason reason;
+  enum caml_actor_monitor_status status;
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  value operation = Val_unit;
+  value id_value = Val_unit;
+  uintnat monitor_id;
+  value result;
+
+  if (!caml_actor_heap_owns_value(heap, monitor)
+      || Tag_val(monitor) != 0 || Wosize_val(monitor) != 2
+      || !caml_actor_heap_read_field(monitor, 0, &operation)
+      || !caml_actor_heap_read_field(monitor, 1, &id_value)
+      || !Is_long(operation) || Long_val(operation) != 0
+      || !Is_long(id_value) || Long_val(id_value) <= 0) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  monitor_id = Long_val(id_value);
+  status = caml_actor_scheduler_peek_exit(scheduler, monitor_id, &reason);
+  if (status == CAML_ACTOR_MONITOR_PENDING) {
+    if (!caml_actor_scheduler_request_blocked()) {
+      caml_actor_scheduler_request_unsupported();
+      return Val_unit;
+    }
+    return monitor;
+  }
+  if (status != CAML_ACTOR_MONITOR_READY) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  result = actor_exit_reason(&reason);
+  if (result == 0) return Val_unit;
+  if (!caml_actor_scheduler_consume_exit(scheduler, monitor_id)) {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  return result;
+}
+
 CAMLprim value caml_actor_receive(value inbox)
 {
 #if defined(NATIVE_CODE)
-  (void)inbox;
+  if (Is_block(inbox) && Tag_val(inbox) == 0 && Wosize_val(inbox) == 2
+      && Is_long(Field(inbox, 0)) && Long_val(Field(inbox, 0)) == 0) {
+    caml_invalid_argument("Actor.await_exit outside an actor world");
+  }
   caml_invalid_argument("Actor.receive outside an actor world");
 #else
   struct caml_actor_scheduler *scheduler;
@@ -684,10 +863,15 @@ CAMLprim value caml_actor_receive(value inbox)
   value message = Val_unit;
 
   if (!caml_actor_scheduler_is_running()) {
+    if (Is_block(inbox) && Tag_val(inbox) == 0 && Wosize_val(inbox) == 2
+        && Is_long(Field(inbox, 0)) && Long_val(Field(inbox, 0)) == 0) {
+      caml_invalid_argument("Actor.await_exit outside an actor world");
+    }
     caml_invalid_argument("Actor.receive outside an actor world");
   }
   scheduler = Caml_state->actor_scheduler;
   pid = caml_actor_scheduler_current_pid();
+  if (Is_block(inbox)) return actor_await_exit(inbox);
   if (!Is_long(inbox) || (uintnat)Long_val(inbox) != pid) {
     caml_actor_scheduler_request_unsupported();
     return Val_unit;

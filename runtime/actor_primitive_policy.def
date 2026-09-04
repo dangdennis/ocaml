@@ -25,7 +25,7 @@ ACTOR_PRIMITIVE(
   "Compares two tagged integers without allocation or mutation.")
 ACTOR_PRIMITIVE(
   "caml_actor_spawn", caml_actor_spawn, 1, SCHEDULER_AWARE, actor,
-  "Copies a closure into a private heap through the scheduler.")
+  "Copies a closure or registers a monitor through the scheduler.")
 ACTOR_PRIMITIVE(
   "caml_actor_self", caml_actor_self, 1, SCHEDULER_AWARE, actor,
   "Returns the scheduler-owned identity of the current actor.")
@@ -37,7 +37,7 @@ ACTOR_PRIMITIVE(
   "Commits a pointer-free mailbox message through the scheduler.")
 ACTOR_PRIMITIVE(
   "caml_actor_receive", caml_actor_receive, 1, SCHEDULER_AWARE, actor,
-  "Receives through the scheduler-owned mailbox boundary.")
+  "Receives mail or a monitored exit through scheduler-owned boundaries.")
 ACTOR_PRIMITIVE(
   "caml_actor_stats", caml_actor_stats, 1, SCHEDULER_AWARE, actor,
   "Copies deterministic scheduler counters into the actor heap.")
