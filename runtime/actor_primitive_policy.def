@@ -25,7 +25,7 @@ ACTOR_PRIMITIVE(
   "Compares two tagged integers without allocation or mutation.")
 ACTOR_PRIMITIVE(
   "caml_actor_spawn", caml_actor_spawn, 1, SCHEDULER_AWARE, actor,
-  "Copies a closure or registers a monitor through the scheduler.")
+  "Copies a closure or handles monitor and cancellation requests through the scheduler.")
 ACTOR_PRIMITIVE(
   "caml_actor_self", caml_actor_self, 1, SCHEDULER_AWARE, actor,
   "Returns the scheduler-owned identity of the current actor.")
