@@ -104,6 +104,31 @@ enum caml_actor_send_status {
   CAML_ACTOR_SEND_INVALID_CONTEXT
 };
 
+enum caml_actor_monitor_status {
+  CAML_ACTOR_MONITOR_OK = 0,
+  CAML_ACTOR_MONITOR_MISSING,
+  CAML_ACTOR_MONITOR_STALE,
+  CAML_ACTOR_MONITOR_PENDING,
+  CAML_ACTOR_MONITOR_READY,
+  CAML_ACTOR_MONITOR_RESOURCE_UNAVAILABLE,
+  CAML_ACTOR_MONITOR_INVALID_CONTEXT
+};
+
+enum caml_actor_exit_kind {
+  CAML_ACTOR_EXIT_NORMAL = 0,
+  CAML_ACTOR_EXIT_EXCEPTION,
+  CAML_ACTOR_EXIT_HEAP_LIMIT,
+  CAML_ACTOR_EXIT_MAILBOX_LIMIT,
+  CAML_ACTOR_EXIT_CANCELLED,
+  CAML_ACTOR_EXIT_UNSUPPORTED,
+  CAML_ACTOR_EXIT_RUNTIME_FAILURE
+};
+
+struct caml_actor_exit_reason {
+  enum caml_actor_exit_kind kind;
+  struct caml_actor_unsupported unsupported;
+};
+
 struct caml_actor_step {
   enum caml_actor_step_reason reason;
   uintnat pid;
@@ -217,6 +242,19 @@ caml_actor_scheduler_peek_current_message(
   struct caml_actor_scheduler *scheduler);
 CAMLextern int caml_actor_scheduler_consume_current_message(
   struct caml_actor_scheduler *scheduler);
+
+/* Monitor records and exit reasons are scheduler-owned and pointer-free.
+   Public values are constructed only by the observing actor. */
+CAMLextern enum caml_actor_monitor_status caml_actor_scheduler_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat target_pid,
+  uintnat *monitor_id);
+CAMLextern enum caml_actor_monitor_status caml_actor_scheduler_peek_exit(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id,
+  struct caml_actor_exit_reason *reason);
+CAMLextern int caml_actor_scheduler_consume_exit(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id);
+CAMLextern int caml_actor_scheduler_discard_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id);
 
 CAMLextern struct caml_actor_step caml_actor_scheduler_step(
   struct caml_actor_scheduler *scheduler);

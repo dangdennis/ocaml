@@ -78,6 +78,13 @@ Exit reasons carry a bounded UTF-8 backtrace string when bytecode backtraces
 are available. Frames are not exposed as runtime pointers, and truncation is
 explicit in the reason metadata.
 
+Monitor registration and waiting reuse the existing one-argument actor spawn
+and receive primitive entry points with disjoint, validated request shapes.
+This keeps the rebuilt Stdlib bootstrap-compatible while the runtime routes
+the requests to scheduler-owned monitor records. A recoverable mailbox quota
+rejection is still a `send` result, not an actor exit; `Mailbox_limit` remains
+reserved until an actor-fatal mailbox condition has an explicit contract.
+
 ## Limits
 
 The current Layer 11 public configuration shape is:
