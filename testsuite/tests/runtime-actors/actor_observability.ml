@@ -98,6 +98,9 @@ let check_world_reset () =
     assert (fresh.mailbox_messages = 0);
     assert (fresh.mailbox_bytes = 0);
     assert (fresh.mailbox_quota_failures = 0);
+    assert (fresh.monitors = 0);
+    assert (fresh.peak_monitors = 0);
+    assert (fresh.monitor_quota_failures = 0);
     assert (fresh.current_heap_words = 1 lsl 18);
     assert (fresh.maximum_heap_words = 1 lsl 18);
     assert (fresh.heap_growths = 0);
@@ -105,7 +108,8 @@ let check_world_reset () =
     assert (fresh.reduction_budget = 1_000);
     assert (fresh.message_word_limit = 1 lsl 16);
     assert (fresh.mailbox_message_limit = 1 lsl 16);
-    assert (fresh.mailbox_byte_limit = 1 lsl 28)))
+    assert (fresh.mailbox_byte_limit = 1 lsl 28);
+    assert (fresh.monitor_limit = 1 lsl 16)))
 
 let rec retain_live count tail =
   if count = 0 then tail else retain_live (count - 1) (count :: tail)
@@ -119,6 +123,7 @@ let check_configured_limits_and_growth () =
     max_message_words = 127;
     max_mailbox_messages = 3;
     max_mailbox_bytes = 8 * word_bytes;
+    max_monitors = 2;
   }
   in
   require_ok (Actor.run_with_config config (fun _root_inbox ->
@@ -130,6 +135,7 @@ let check_configured_limits_and_growth () =
     assert (initial.message_word_limit = 127);
     assert (initial.mailbox_message_limit = 3);
     assert (initial.mailbox_byte_limit = 8 * word_bytes);
+    assert (initial.monitor_limit = 2);
     let live = retain_live 1_000 [] in
     if List.length live <> 1_000 then ignore (1 / 0);
     let grown = Actor.stats () in
@@ -144,7 +150,42 @@ let check_configured_limits_and_growth () =
     let rejected = Actor.stats () in
     assert (rejected.mailbox_messages = 0);
     assert (rejected.mailbox_bytes = 0);
-    assert (rejected.mailbox_quota_failures = 1)))
+    assert (rejected.mailbox_quota_failures = 1);
+    let first =
+      match Actor.monitor child with
+      | Ok monitor -> monitor
+      | Error _ -> failwith "first monitor rejected"
+    in
+    let second =
+      match Actor.monitor child with
+      | Ok monitor -> monitor
+      | Error _ -> failwith "second monitor rejected"
+    in
+    begin match Actor.monitor child with
+    | Error Actor.Monitor_limit -> ()
+    | _ -> failwith "monitor quota not enforced"
+    end;
+    let full = Actor.stats () in
+    assert (full.monitors = 2);
+    assert (full.peak_monitors = 2);
+    assert (full.monitor_quota_failures = 1);
+    begin match Actor.cancel child with
+    | Ok () -> ()
+    | Error _ -> failwith "cancel failed"
+    end;
+    begin match Actor.await_exit first with
+    | Actor.Cancelled -> ()
+    | _ -> failwith "first monitor lost cancellation"
+    end;
+    assert ((Actor.stats ()).monitors = 1);
+    begin match Actor.await_exit second with
+    | Actor.Cancelled -> ()
+    | _ -> failwith "second monitor lost cancellation"
+    end;
+    let drained = Actor.stats () in
+    assert (drained.monitors = 0);
+    assert (drained.peak_monitors = 2);
+    assert (drained.monitor_quota_failures = 1)))
 
 let () =
   check_host_rejection ();

@@ -10,10 +10,10 @@ The MVP supports Linux x86-64, bytecode, one OS thread, and one runtime-owned
 scheduler. It provides private actor heaps, FIFO mailboxes, reduction-based
 preemption, and actor-local failure. It is not a security sandbox.
 
-Native code, multiple Domains, selective receive, links, monitors, timers,
-blocking I/O, distribution, arbitrary C stubs, effects, and finalizers are out
-of scope. Unsupported operations fail closed; they never silently use shared
-runtime state.
+Native code, multiple Domains, selective receive, links, timers, blocking I/O,
+distribution, arbitrary C stubs, effects, and finalizers are out of scope.
+Unsupported operations fail closed; they never silently use shared runtime
+state.
 
 ## API
 
@@ -25,6 +25,22 @@ the types or constructors below:
 module Actor : sig
   type 'message pid
   type 'message inbox
+  type monitor
+
+  type backtrace = { text : string; truncated : bool }
+  type exit_reason =
+    | Normal
+    | Uncaught_exception of {
+        summary : string;
+        backtrace : backtrace option;
+      }
+    | Heap_limit
+    | Mailbox_limit
+    | Cancelled
+    | Unsupported_operation of string
+    | Runtime_failure of string
+  type monitor_error = Monitor_missing | Monitor_stale | Monitor_limit
+  type cancel_error = Cancel_missing | Cancel_stale | Cancel_self
 
   type heap_limits = {
     initial_words : int;
@@ -42,6 +58,7 @@ module Actor : sig
     max_message_words : int;
     max_mailbox_messages : int;
     max_mailbox_bytes : int;
+    max_monitors : int;
   }
 
   val default_world_config : world_config
@@ -85,6 +102,10 @@ module Actor : sig
     message_word_limit : int;
     mailbox_message_limit : int;
     mailbox_byte_limit : int;
+    monitors : int;
+    peak_monitors : int;
+    monitor_quota_failures : int;
+    monitor_limit : int;
   }
 
   val run : (unit inbox -> unit) -> (unit, run_error) result
@@ -97,6 +118,9 @@ module Actor : sig
     ('message pid, spawn_error) result
   val spawn_with_heap_limits : heap_limits ->
     ('message inbox -> unit) -> ('message pid, spawn_error) result
+  val monitor : _ pid -> (monitor, monitor_error) result
+  val cancel : _ pid -> (unit, cancel_error) result
+  val await_exit : monitor -> exit_reason
   val self : 'message inbox -> 'message pid
   val send : 'message pid -> 'message -> (unit, send_error) result
   val receive : 'message inbox -> 'message
@@ -147,6 +171,42 @@ once. Both limits are checked before send preparation and again at commit.
 Quota rejection links no envelope, changes no mailbox gauge, and does not wake
 a blocked receiver. Receiving or retiring an actor releases the corresponding
 message and byte charges.
+
+Layer 12 monitor registration also reuses `caml_actor_spawn/1`, while
+`await_exit` reuses the retryable `caml_actor_receive/1` boundary. Monitor
+records contain only generation-tagged integer identities and pointer-free
+exit metadata owned by the scheduler. An exit wakes a blocked watcher without
+placing a value in its typed FIFO mailbox. The public reason is allocated only
+in the waiting actor's heap and each monitor can be consumed exactly once.
+Missing and stale PIDs remain distinct and a retired PID can never retarget a
+monitor after slot reuse. Recoverable mailbox quota rejection remains a
+`send` error and does not terminate its caller; `Mailbox_limit` is reserved
+for an actor-fatal mailbox condition.
+
+Before freezing the host world, actor entry loads any bytecode debug table
+into runtime-owned C metadata. Exception unwinding then records at most 32
+code slots in the failing actor's scheduler slot without changing the
+Domain's ordinary backtrace root. Before retirement those slots become a
+bounded UTF-8 text trace of at most 2,047 bytes. The public trace records
+whether either the frame or text bound truncated it; executables without
+usable debug locations return `None`. Exception summaries are independently
+bounded to 255 bytes and repaired to a complete UTF-8 prefix.
+
+Cancellation uses a two-field request over the existing spawn primitive, so
+it does not add a bootstrap-visible runtime name. The scheduler validates the
+target generation, removes a runnable target from the ready queue (or marks a
+blocked target terminal), and reports the cancellation before the next actor
+dispatch. The normal retirement boundary then publishes `Cancelled`, drops
+queued messages, destroys the target heap, and advances its PID generation.
+Self-cancellation returns `Cancel_self`; it never destroys the active actor
+heap beneath the bytecode interpreter.
+
+`world_config.max_monitors` bounds scheduler-owned monitor records and
+defaults to 65,536. Registration checks the quota before allocation, returns
+`Monitor_limit` without partial publication, and records a deterministic
+quota failure. `Actor.stats` exposes the live and peak monitor counts, quota
+failures, and configured limit. Consuming a ready exit, rolling back a token
+allocation, or retiring a watcher releases one live record exactly once.
 
 ## Execution semantics
 

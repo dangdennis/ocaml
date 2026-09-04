@@ -78,6 +78,35 @@ Exit reasons carry a bounded UTF-8 backtrace string when bytecode backtraces
 are available. Frames are not exposed as runtime pointers, and truncation is
 explicit in the reason metadata.
 
+Monitor registration and waiting reuse the existing one-argument actor spawn
+and receive primitive entry points with disjoint, validated request shapes.
+This keeps the rebuilt Stdlib bootstrap-compatible while the runtime routes
+the requests to scheduler-owned monitor records. A recoverable mailbox quota
+rejection is still a `send` result, not an actor exit; `Mailbox_limit` remains
+reserved until an actor-fatal mailbox condition has an explicit contract.
+
+Actor entry eagerly converts the executable's bytecode debug section to
+runtime-owned C metadata before the host world freezes. Actor exception
+unwinding uses a scheduler-slot buffer rather than the Domain backtrace buffer
+and never stores an actor exception in the Domain's generational global root.
+At most 32 frames and 2,047 UTF-8 text bytes are retained, with explicit
+truncation in the public backtrace record. No-debug executables return `None`.
+
+`Actor.cancel` is a generation-checked scheduler operation. Successful
+cancellation removes a runnable target from the ready queue or terminates a
+blocked target before the scheduler can dispatch another actor. The ordinary
+retirement path publishes `Cancelled` to existing monitors before destroying
+the target heap and advancing its PID generation. Cancelling the active actor
+is a recoverable `Cancel_self` error, so the primitive never destroys its own
+heap underneath the interpreter.
+
+Monitor allocation is bounded by `world_config.max_monitors`, with the
+existing default fixed at 65,536 records. A full scheduler-owned monitor
+table returns `Monitor_limit` before allocation and increments a saturating
+quota-failure counter. `Actor.stats` reports current, peak, failed, and limit
+values; consumption, allocation rollback, and watcher retirement decrement
+the current count exactly once.
+
 ## Limits
 
 The current Layer 11 public configuration shape is:
@@ -96,6 +125,7 @@ type world_config = {
   max_message_words : int;
   max_mailbox_messages : int;
   max_mailbox_bytes : int;
+  max_monitors : int;
 }
 
 val default_world_config : world_config
