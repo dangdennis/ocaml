@@ -319,14 +319,14 @@ supervision, timers, and general wait sets remain outside this layer.
 - [x] Capture bounded exception summaries and bytecode backtraces with explicit
       truncation metadata.
 - [x] Add explicit cancellation and the `Cancelled` exit reason.
-- [ ] Bound monitor resources and expose deterministic observability.
+- [x] Bound monitor resources and expose deterministic observability.
 - [ ] Pass race, cleanup, PID-reuse, sanitizer, package, benchmark, hygiene,
       and fresh-runner gates and publish the stacked Layer 12 draft.
 
 ### Current next action
 
-Add a finite monitor quota to world configuration, then expose current and
-peak monitor counts plus deterministic quota failures through `Actor.stats`.
+Add race, cleanup, and PID-reuse stress cases, then re-run the complete
+sanitizer, package, benchmark, hygiene, and fresh-runner gates.
 
 ## Layer 13: supervision
 

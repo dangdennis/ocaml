@@ -112,6 +112,7 @@ enum caml_actor_monitor_status {
   CAML_ACTOR_MONITOR_PENDING,
   CAML_ACTOR_MONITOR_READY,
   CAML_ACTOR_MONITOR_SELF,
+  CAML_ACTOR_MONITOR_LIMIT,
   CAML_ACTOR_MONITOR_RESOURCE_UNAVAILABLE,
   CAML_ACTOR_MONITOR_INVALID_CONTEXT
 };
@@ -175,6 +176,10 @@ struct caml_actor_scheduler_stats {
   uintnat message_word_limit;
   uintnat mailbox_message_limit;
   uintnat mailbox_byte_limit;
+  uintnat monitors;
+  uintnat peak_monitors;
+  uintnat monitor_quota_failures;
+  uintnat monitor_limit;
 };
 
 CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create(
@@ -183,7 +188,7 @@ CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   uintnat capacity, uintnat reduction_budget,
   mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words,
   mlsize_t message_quota_words, uintnat mailbox_message_limit,
-  uintnat mailbox_byte_limit);
+  uintnat mailbox_byte_limit, uintnat monitor_limit);
 CAMLextern void caml_actor_scheduler_destroy(
   struct caml_actor_scheduler *scheduler);
 
