@@ -22,6 +22,7 @@
 #include "caml/actor_wire.h"
 #include "caml/actor_world.h"
 #include "caml/alloc.h"
+#include "caml/backtrace.h"
 #include "caml/domain_state.h"
 #include "caml/fail.h"
 #include "caml/instruct.h"
@@ -160,16 +161,28 @@ static value actor_exit_reason(
   const struct caml_actor_exit_reason *reason)
 {
   CAMLparam0();
-  CAMLlocal2(detail, text);
+  CAMLlocal4(detail, text, backtrace, backtrace_option);
   char message[160];
 
   switch (reason->kind) {
   case CAML_ACTOR_EXIT_NORMAL:
     CAMLreturn(Val_int(0)); /* Normal */
   case CAML_ACTOR_EXIT_EXCEPTION:
-    text = actor_copy_string("uncaught actor exception");
+    text = actor_copy_string(
+      reason->summary[0] == '\0'
+        ? "uncaught actor exception" : reason->summary);
     if (text == 0) CAMLreturn(0);
-    detail = actor_alloc_two(0, text, Val_int(0));
+    backtrace_option = Val_int(0); /* None */
+    if (reason->backtrace[0] != '\0') {
+      backtrace = actor_copy_string(reason->backtrace);
+      if (backtrace == 0) CAMLreturn(0);
+      backtrace = actor_alloc_two(
+        0, backtrace, Val_bool(reason->backtrace_truncated));
+      if (backtrace == 0) CAMLreturn(0);
+      backtrace_option = actor_alloc_one(0, backtrace); /* Some */
+      if (backtrace_option == 0) CAMLreturn(0);
+    }
+    detail = actor_alloc_two(0, text, backtrace_option);
     CAMLreturn(detail); /* Uncaught_exception */
   case CAML_ACTOR_EXIT_HEAP_LIMIT:
     CAMLreturn(Val_int(1)); /* Heap_limit */
@@ -284,6 +297,7 @@ static value actor_run(value root,
   uintnat root_pid = 0;
   int frozen = 0;
 
+  caml_load_actor_debug_info();
   world_status = caml_actor_world_freeze();
   if (world_status != CAML_ACTOR_WORLD_OK) goto finished;
   frozen = 1;
@@ -804,6 +818,7 @@ CAMLprim value caml_actor_send(value pid_value, value message)
 #endif
 }
 
+#if !defined(NATIVE_CODE)
 static value actor_await_exit(value monitor)
 {
   struct caml_actor_scheduler *scheduler = Caml_state->actor_scheduler;
@@ -845,6 +860,7 @@ static value actor_await_exit(value monitor)
   }
   return result;
 }
+#endif
 
 CAMLprim value caml_actor_receive(value inbox)
 {

@@ -44,6 +44,7 @@
 #include "caml/backtrace.h"
 #include "caml/fail.h"
 #include "caml/backtrace_prim.h"
+#include "caml/actor_scheduler.h"
 #include "caml/debugger.h"
 
 /* The table of debug information fragments */
@@ -270,6 +271,23 @@ void caml_free_backtrace_buffer(backtrace_slot *backtrace_buffer) {
 void caml_stash_backtrace(value exn, value * sp, int reraise)
 {
   value *trap_sp;
+
+  if (caml_actor_scheduler_is_running()) {
+    if (!reraise) caml_actor_scheduler_reset_backtrace();
+    trap_sp = Stack_high(Caml_state->current_stack)
+      + Caml_state->trap_sp_off;
+    for (/*nothing*/; sp < trap_sp; sp++) {
+      code_t frame;
+
+      if (Is_long(*sp)) continue;
+      frame = (code_t)*sp;
+      if (find_debug_info(frame) != NULL) {
+        caml_actor_scheduler_record_backtrace_slot(
+          (backtrace_slot)frame);
+      }
+    }
+    return;
+  }
 
   if (exn != Caml_state->backtrace_last_exn || !reraise) {
     Caml_state->backtrace_pos = 0;
@@ -511,6 +529,15 @@ CAMLexport void caml_load_main_debug_info(void)
 {
   if (caml_params->backtrace_enabled > 1) {
     read_main_debug_info(caml_debug_info.contents[0]);
+  }
+}
+
+CAMLexport void caml_load_actor_debug_info(void)
+{
+  if (caml_debug_info.size != 0) {
+    struct debug_info *info = caml_debug_info.contents[0];
+
+    if (!info->already_read) read_main_debug_info(info);
   }
 }
 

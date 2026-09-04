@@ -14,6 +14,7 @@
 
 #define CAML_INTERNALS
 
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,7 @@
 #include "caml/actor_scheduler.h"
 #include "caml/actor_wire.h"
 #include "caml/actor_world.h"
+#include "caml/backtrace_prim.h"
 #include "caml/callback.h"
 #include "caml/codefrag.h"
 #include "caml/debugger.h"
@@ -33,6 +35,7 @@
 #include "caml/interp.h"
 #include "caml/misc.h"
 #include "caml/prims.h"
+#include "caml/printexc.h"
 #include "caml/signals.h"
 
 #define ACTOR_SLOT_NONE UINT32_MAX
@@ -126,6 +129,10 @@ struct caml_actor_slot {
   uintnat dispatches;
   uintnat reduction_stops;
   struct caml_actor_unsupported unsupported;
+  char failure_summary[CAML_ACTOR_EXIT_SUMMARY_BYTES];
+  backtrace_slot failure_backtrace_slots[CAML_ACTOR_BACKTRACE_SLOTS];
+  uintnat failure_backtrace_pos;
+  int failure_backtrace_truncated;
   uint32_t ready_next;
   int queued;
   struct stack_info *stack;
@@ -220,6 +227,52 @@ static void add_counter(uintnat *counter, uintnat amount)
 static void increment_counter(uintnat *counter)
 {
   add_counter(counter, 1);
+}
+
+static size_t valid_utf8_prefix(const char *text, size_t length)
+{
+  size_t offset = 0;
+
+  while (offset < length) {
+    unsigned char lead = (unsigned char)text[offset];
+    size_t width;
+
+    if (lead < 0x80) {
+      offset++;
+      continue;
+    }
+    if (lead >= 0xc2 && lead <= 0xdf) width = 2;
+    else if (lead >= 0xe0 && lead <= 0xef) width = 3;
+    else if (lead >= 0xf0 && lead <= 0xf4) width = 4;
+    else break;
+    if (width > length - offset) break;
+    for (size_t index = 1; index < width; index++) {
+      if (((unsigned char)text[offset + index] & 0xc0) != 0x80) {
+        return offset;
+      }
+    }
+    if ((lead == 0xe0 && (unsigned char)text[offset + 1] < 0xa0)
+        || (lead == 0xed && (unsigned char)text[offset + 1] > 0x9f)
+        || (lead == 0xf0 && (unsigned char)text[offset + 1] < 0x90)
+        || (lead == 0xf4 && (unsigned char)text[offset + 1] > 0x8f)) {
+      break;
+    }
+    offset += width;
+  }
+  return offset;
+}
+
+static void copy_bounded_utf8(char *destination, size_t capacity,
+                              const char *source)
+{
+  size_t length;
+
+  CAMLassert(destination != NULL && capacity > 0 && source != NULL);
+  length = strlen(source);
+  if (length >= capacity) length = capacity - 1;
+  length = valid_utf8_prefix(source, length);
+  memcpy(destination, source, length);
+  destination[length] = '\0';
 }
 
 static int scheduler_runtime_supported(void)
@@ -937,6 +990,22 @@ int caml_actor_scheduler_commit_prepared(
   return 1;
 }
 
+static void capture_exception_summary(struct caml_actor_slot *slot,
+                                      value exception)
+{
+  char *formatted;
+
+  copy_bounded_utf8(slot->failure_summary, sizeof(slot->failure_summary),
+                    "uncaught actor exception");
+  if (!Is_block(exception)
+      || !caml_actor_heap_owns_value(slot->heap, exception)) return;
+  formatted = caml_format_exception(exception);
+  if (formatted == NULL) return;
+  copy_bounded_utf8(
+    slot->failure_summary, sizeof(slot->failure_summary), formatted);
+  caml_stat_free(formatted);
+}
+
 struct caml_actor_step caml_actor_scheduler_step(
   struct caml_actor_scheduler *scheduler)
 {
@@ -972,7 +1041,9 @@ struct caml_actor_step caml_actor_scheduler_step(
   CAMLassert(scheduler->control_request == CAML_ACTOR_CONTROL_NONE);
   domain->current_stack = slot->stack;
   domain->local_roots = NULL;
-  domain->backtrace_active = 0;
+  domain->backtrace_active = 1;
+  slot->failure_backtrace_pos = 0;
+  slot->failure_backtrace_truncated = 0;
   domain->trap_barrier_off = 0;
   domain->trap_barrier_block = INT64_MIN;
 
@@ -1071,6 +1142,7 @@ struct caml_actor_step caml_actor_scheduler_step(
     case CAML_BYTECODE_STOP_EXCEPTION:
       slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
       slot->failure = CAML_ACTOR_FAILURE_EXCEPTION;
+      capture_exception_summary(slot, result);
       increment_counter(&scheduler->total_failed);
       step.reason = CAML_ACTOR_STEP_FAILED;
       break;
@@ -1477,6 +1549,68 @@ int caml_actor_scheduler_stats(
   return 1;
 }
 
+static void append_backtrace_line(struct caml_actor_exit_reason *reason,
+                                  const char *line)
+{
+  size_t used = strlen(reason->backtrace);
+  size_t available = sizeof(reason->backtrace) - used;
+  int written;
+
+  if (available <= 1) {
+    reason->backtrace_truncated = 1;
+    return;
+  }
+  written = snprintf(reason->backtrace + used, available, "%s", line);
+  if (written < 0 || (size_t)written >= available) {
+    size_t valid = valid_utf8_prefix(
+      reason->backtrace, strlen(reason->backtrace));
+
+    reason->backtrace[valid] = '\0';
+    reason->backtrace_truncated = 1;
+  }
+}
+
+static void format_failure_backtrace(
+  struct caml_actor_exit_reason *reason,
+  const struct caml_actor_slot *slot)
+{
+  int output_index = 0;
+
+  reason->backtrace_truncated = slot->failure_backtrace_truncated;
+  for (uintnat index = 0; index < slot->failure_backtrace_pos; index++) {
+    debuginfo info =
+      caml_debuginfo_extract(slot->failure_backtrace_slots[index]);
+
+    for (; info != NULL; info = caml_debuginfo_next(info)) {
+      struct caml_loc_info location;
+      const char *prefix;
+      char line[1024];
+      int written;
+
+      caml_debuginfo_location(info, &location);
+      if (!location.loc_valid) continue;
+      if (location.loc_is_raise) {
+        prefix = output_index == 0 ? "Raised at" : "Re-raised at";
+      } else {
+        prefix = output_index == 0
+          ? "Raised by primitive operation at" : "Called from";
+      }
+      written = snprintf(
+        line, sizeof(line), "%s %s in file \"%s\", line %d, "
+        "characters %d-%d%s\n", prefix, location.loc_defname,
+        location.loc_filename, location.loc_start_lnum,
+        location.loc_start_chr, location.loc_end_chr,
+        location.loc_is_inlined ? " (inlined)" : "");
+      if (written < 0 || (size_t)written >= sizeof(line)) {
+        line[valid_utf8_prefix(line, strlen(line))] = '\0';
+        reason->backtrace_truncated = 1;
+      }
+      append_backtrace_line(reason, line);
+      output_index++;
+    }
+  }
+}
+
 static struct caml_actor_exit_reason exit_reason_for_slot(
   const struct caml_actor_slot *slot)
 {
@@ -1490,6 +1624,11 @@ static struct caml_actor_exit_reason exit_reason_for_slot(
   switch (slot->failure) {
   case CAML_ACTOR_FAILURE_EXCEPTION:
     reason.kind = CAML_ACTOR_EXIT_EXCEPTION;
+    copy_bounded_utf8(reason.summary, sizeof(reason.summary),
+                      slot->failure_summary[0] == '\0'
+                        ? "uncaught actor exception"
+                        : slot->failure_summary);
+    format_failure_backtrace(&reason, slot);
     break;
   case CAML_ACTOR_FAILURE_HEAP_EXHAUSTED:
     reason.kind = CAML_ACTOR_EXIT_HEAP_LIMIT;
@@ -1580,6 +1719,11 @@ int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,
   slot->dispatches = 0;
   slot->reduction_stops = 0;
   memset(&slot->unsupported, 0, sizeof(slot->unsupported));
+  memset(slot->failure_summary, 0, sizeof(slot->failure_summary));
+  memset(slot->failure_backtrace_slots, 0,
+         sizeof(slot->failure_backtrace_slots));
+  slot->failure_backtrace_pos = 0;
+  slot->failure_backtrace_truncated = 0;
   slot->ready_next = ACTOR_SLOT_NONE;
   if (index == 0 || slot->generation >= max_pid_generation()) {
     slot->lifecycle = CAML_ACTOR_LIFECYCLE_RETIRED;
@@ -1618,6 +1762,37 @@ uintnat caml_actor_scheduler_current_pid(void)
   scheduler = domain->actor_scheduler;
   if (!running_context_matches(scheduler)) return 0;
   return scheduler->slots[scheduler->current].pid;
+}
+
+void caml_actor_scheduler_reset_backtrace(void)
+{
+  caml_domain_state *domain = Caml_state_opt;
+  struct caml_actor_scheduler *scheduler;
+  struct caml_actor_slot *slot;
+
+  if (domain == NULL || domain->actor_scheduler == NULL) return;
+  scheduler = domain->actor_scheduler;
+  if (!current_actor_context_matches(scheduler)) return;
+  slot = &scheduler->slots[scheduler->current];
+  slot->failure_backtrace_pos = 0;
+  slot->failure_backtrace_truncated = 0;
+}
+
+void caml_actor_scheduler_record_backtrace_slot(backtrace_slot frame)
+{
+  caml_domain_state *domain = Caml_state_opt;
+  struct caml_actor_scheduler *scheduler;
+  struct caml_actor_slot *slot;
+
+  if (domain == NULL || domain->actor_scheduler == NULL) return;
+  scheduler = domain->actor_scheduler;
+  if (!current_actor_context_matches(scheduler)) return;
+  slot = &scheduler->slots[scheduler->current];
+  if (slot->failure_backtrace_pos >= CAML_ACTOR_BACKTRACE_SLOTS) {
+    slot->failure_backtrace_truncated = 1;
+    return;
+  }
+  slot->failure_backtrace_slots[slot->failure_backtrace_pos++] = frame;
 }
 
 static int request_control(enum caml_actor_control_request request)
@@ -1946,6 +2121,15 @@ int caml_actor_scheduler_is_running(void)
 uintnat caml_actor_scheduler_current_pid(void)
 {
   return 0;
+}
+
+void caml_actor_scheduler_reset_backtrace(void)
+{
+}
+
+void caml_actor_scheduler_record_backtrace_slot(backtrace_slot frame)
+{
+  (void)frame;
 }
 
 int caml_actor_scheduler_request_yield(void)

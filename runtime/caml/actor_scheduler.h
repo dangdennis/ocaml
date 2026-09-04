@@ -124,9 +124,16 @@ enum caml_actor_exit_kind {
   CAML_ACTOR_EXIT_RUNTIME_FAILURE
 };
 
+#define CAML_ACTOR_EXIT_SUMMARY_BYTES 256
+#define CAML_ACTOR_EXIT_BACKTRACE_BYTES 2048
+#define CAML_ACTOR_BACKTRACE_SLOTS 32
+
 struct caml_actor_exit_reason {
   enum caml_actor_exit_kind kind;
   struct caml_actor_unsupported unsupported;
+  char summary[CAML_ACTOR_EXIT_SUMMARY_BYTES];
+  char backtrace[CAML_ACTOR_EXIT_BACKTRACE_BYTES];
+  int backtrace_truncated;
 };
 
 struct caml_actor_step {
@@ -278,6 +285,9 @@ CAMLextern int caml_actor_scheduler_request_yield(void);
 CAMLextern int caml_actor_scheduler_request_blocked(void);
 CAMLextern int caml_actor_scheduler_request_unsupported(void);
 CAMLextern int caml_actor_scheduler_request_heap_exhausted(void);
+CAMLextern void caml_actor_scheduler_reset_backtrace(void);
+CAMLextern void caml_actor_scheduler_record_backtrace_slot(
+  backtrace_slot slot);
 CAMLextern void caml_actor_scheduler_record_unsupported_opcode(
   uintnat opcode);
 CAMLextern void caml_actor_scheduler_record_unsupported_primitive(
