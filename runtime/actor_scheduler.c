@@ -39,6 +39,7 @@
 #include "caml/signals.h"
 
 #define ACTOR_SLOT_NONE UINT32_MAX
+#define ACTOR_TRACE_DEFAULT_CAPACITY 4096
 
 #if !defined(NATIVE_CODE)
 
@@ -181,6 +182,15 @@ struct caml_actor_scheduler {
   uintnat next_monitor_id;
   struct caml_actor_monitor *monitors;
 
+  FILE *trace_output;
+  struct caml_actor_trace_event *trace_events;
+  uintnat trace_capacity;
+  uintnat trace_count;
+  uintnat trace_next_sequence;
+  uintnat trace_next_message;
+  uintnat trace_dropped;
+  int trace_failed;
+
   struct stack_info *host_stack;
   int64_t host_stack_id;
   struct caml_exception_context *host_external_raise;
@@ -207,7 +217,28 @@ struct caml_actor_prepared_send {
   uintnat target_pid;
   struct caml_actor_envelope *envelope;
   uintnat encoded_bytes;
+  uintnat source_pid;
+  uintnat message_sequence;
   struct caml_actor_prepared_send *next;
+};
+
+enum caml_actor_trace_kind {
+  CAML_ACTOR_TRACE_SPAWN = 0,
+  CAML_ACTOR_TRACE_STATE,
+  CAML_ACTOR_TRACE_SEND,
+  CAML_ACTOR_TRACE_SEND_REJECTED,
+  CAML_ACTOR_TRACE_RECEIVE,
+  CAML_ACTOR_TRACE_DROP,
+  CAML_ACTOR_TRACE_EXIT
+};
+
+struct caml_actor_trace_event {
+  enum caml_actor_trace_kind kind;
+  uintnat sequence;
+  uintnat actor;
+  uintnat peer;
+  uintnat message_sequence;
+  uintnat data[8];
 };
 
 struct caml_actor_monitor {
@@ -231,6 +262,157 @@ static void add_counter(uintnat *counter, uintnat amount)
 static void increment_counter(uintnat *counter)
 {
   add_counter(counter, 1);
+}
+
+static const char *trace_lifecycle_name(enum caml_actor_lifecycle lifecycle)
+{
+  switch (lifecycle) {
+  case CAML_ACTOR_LIFECYCLE_RUNNABLE: return "runnable";
+  case CAML_ACTOR_LIFECYCLE_RUNNING: return "running";
+  case CAML_ACTOR_LIFECYCLE_BLOCKED: return "blocked";
+  case CAML_ACTOR_LIFECYCLE_EXITED: return "exited";
+  case CAML_ACTOR_LIFECYCLE_FAILED: return "failed";
+  case CAML_ACTOR_LIFECYCLE_RETIRED: return "retired";
+  default: return "free";
+  }
+}
+
+static const char *trace_failure_name(enum caml_actor_failure failure)
+{
+  switch (failure) {
+  case CAML_ACTOR_FAILURE_NONE: return "normal";
+  case CAML_ACTOR_FAILURE_EXCEPTION: return "exception";
+  case CAML_ACTOR_FAILURE_UNSUPPORTED: return "unsupported";
+  case CAML_ACTOR_FAILURE_HEAP_EXHAUSTED: return "heap_limit";
+  case CAML_ACTOR_FAILURE_CANCELLED: return "cancelled";
+  case CAML_ACTOR_FAILURE_INVALID_HEAP: return "invalid_heap";
+  case CAML_ACTOR_FAILURE_INVALID_RESULT: return "invalid_result";
+  default: return "runtime_failure";
+  }
+}
+
+static const char *trace_rejection_name(
+  enum caml_actor_trace_send_rejection rejection)
+{
+  switch (rejection) {
+  case CAML_ACTOR_TRACE_REJECT_MISSING: return "missing";
+  case CAML_ACTOR_TRACE_REJECT_QUOTA: return "quota";
+  case CAML_ACTOR_TRACE_REJECT_UNSUPPORTED: return "unsupported";
+  case CAML_ACTOR_TRACE_REJECT_RESOURCE: return "resource";
+  }
+  return "internal";
+}
+
+static void trace_fail(struct caml_actor_scheduler *scheduler,
+                       const char *reason)
+{
+  if (scheduler == NULL || scheduler->trace_failed) return;
+  fprintf(stderr, "OCaml actor trace incomplete: %s\n", reason);
+  scheduler->trace_failed = 1;
+}
+
+static void trace_record(struct caml_actor_scheduler *scheduler,
+                         enum caml_actor_trace_kind kind,
+                         uintnat actor, uintnat peer,
+                         uintnat message_sequence,
+                         const uintnat data[8])
+{
+  struct caml_actor_trace_event *event;
+
+  if (scheduler == NULL || scheduler->trace_output == NULL
+      || scheduler->trace_failed) return;
+  increment_counter(&scheduler->trace_next_sequence);
+  if (scheduler->trace_count >= scheduler->trace_capacity) {
+    increment_counter(&scheduler->trace_dropped);
+    return;
+  }
+  event = &scheduler->trace_events[scheduler->trace_count++];
+  memset(event, 0, sizeof(*event));
+  event->kind = kind;
+  event->sequence = scheduler->trace_next_sequence;
+  event->actor = actor;
+  event->peer = peer;
+  event->message_sequence = message_sequence;
+  if (data != NULL) memcpy(event->data, data, sizeof(event->data));
+}
+
+static void trace_record_state(struct caml_actor_scheduler *scheduler,
+                               const struct caml_actor_slot *slot)
+{
+  uintnat data[8];
+
+  if (slot == NULL || slot->heap == NULL) return;
+  data[0] = slot->lifecycle;
+  data[1] = slot->mailbox_length;
+  data[2] = slot->mailbox_bytes;
+  data[3] = caml_actor_heap_used_words(slot->heap);
+  data[4] = caml_actor_heap_capacity_words(slot->heap);
+  data[5] = caml_actor_heap_quota_words(slot->heap);
+  data[6] = caml_actor_heap_collections(slot->heap);
+  data[7] = caml_actor_heap_growths(slot->heap);
+  trace_record(scheduler, CAML_ACTOR_TRACE_STATE, slot->pid, 0, 0, data);
+}
+
+static int trace_write_event(FILE *output,
+                             const struct caml_actor_trace_event *event)
+{
+  switch (event->kind) {
+  case CAML_ACTOR_TRACE_SPAWN:
+    return fprintf(output,
+      "{\"event\":\"spawn\",\"seq\":%llu,\"actor\":%llu,"
+      "\"parent\":%llu,\"heap_used\":%llu,\"heap_capacity\":%llu,"
+      "\"heap_maximum\":%llu}\n",
+      (unsigned long long)event->sequence,
+      (unsigned long long)event->actor, (unsigned long long)event->peer,
+      (unsigned long long)event->data[0], (unsigned long long)event->data[1],
+      (unsigned long long)event->data[2]) >= 0;
+  case CAML_ACTOR_TRACE_STATE:
+    return fprintf(output,
+      "{\"event\":\"state\",\"seq\":%llu,\"actor\":%llu,"
+      "\"state\":\"%s\",\"mailbox_messages\":%llu,"
+      "\"mailbox_bytes\":%llu,\"heap_used\":%llu,"
+      "\"heap_capacity\":%llu,\"heap_maximum\":%llu,"
+      "\"collections\":%llu,\"growths\":%llu}\n",
+      (unsigned long long)event->sequence,
+      (unsigned long long)event->actor,
+      trace_lifecycle_name((enum caml_actor_lifecycle)event->data[0]),
+      (unsigned long long)event->data[1], (unsigned long long)event->data[2],
+      (unsigned long long)event->data[3], (unsigned long long)event->data[4],
+      (unsigned long long)event->data[5], (unsigned long long)event->data[6],
+      (unsigned long long)event->data[7]) >= 0;
+  case CAML_ACTOR_TRACE_SEND:
+  case CAML_ACTOR_TRACE_RECEIVE:
+  case CAML_ACTOR_TRACE_DROP: {
+    const char *kind = event->kind == CAML_ACTOR_TRACE_SEND ? "send"
+      : event->kind == CAML_ACTOR_TRACE_RECEIVE ? "receive" : "drop";
+    return fprintf(output,
+      "{\"event\":\"%s\",\"seq\":%llu,\"message\":%llu,"
+      "\"sender\":%llu,\"receiver\":%llu,\"bytes\":%llu,"
+      "\"mailbox_messages\":%llu,\"mailbox_bytes\":%llu}\n",
+      kind, (unsigned long long)event->sequence,
+      (unsigned long long)event->message_sequence,
+      (unsigned long long)event->actor, (unsigned long long)event->peer,
+      (unsigned long long)event->data[0], (unsigned long long)event->data[1],
+      (unsigned long long)event->data[2]) >= 0;
+  }
+  case CAML_ACTOR_TRACE_SEND_REJECTED:
+    return fprintf(output,
+      "{\"event\":\"send_rejected\",\"seq\":%llu,"
+      "\"sender\":%llu,\"receiver\":%llu,\"reason\":\"%s\"}\n",
+      (unsigned long long)event->sequence,
+      (unsigned long long)event->actor, (unsigned long long)event->peer,
+      trace_rejection_name(
+        (enum caml_actor_trace_send_rejection)event->data[0])) >= 0;
+  case CAML_ACTOR_TRACE_EXIT:
+    return fprintf(output,
+      "{\"event\":\"exit\",\"seq\":%llu,\"actor\":%llu,"
+      "\"reason\":\"%s\",\"dropped_messages\":%llu}\n",
+      (unsigned long long)event->sequence,
+      (unsigned long long)event->actor,
+      trace_failure_name((enum caml_actor_failure)event->data[0]),
+      (unsigned long long)event->data[1]) >= 0;
+  }
+  return 0;
 }
 
 static size_t valid_utf8_prefix(const char *text, size_t length)
@@ -646,6 +828,99 @@ struct caml_actor_scheduler *caml_actor_scheduler_create(
     CAML_UINTNAT_MAX, CAML_UINTNAT_MAX, CAML_UINTNAT_MAX);
 }
 
+void caml_actor_scheduler_trace_enable_from_environment(
+  struct caml_actor_scheduler *scheduler)
+{
+  const char *path;
+  const char *capacity_text;
+  uintnat capacity = ACTOR_TRACE_DEFAULT_CAPACITY;
+
+  if (scheduler == NULL || !refresh_host_context(scheduler)
+      || scheduler->trace_output != NULL) return;
+  path = getenv("OCAML_ACTOR_TRACE");
+  if (path == NULL || path[0] == '\0') return;
+  capacity_text = getenv("OCAML_ACTOR_TRACE_BUFFER_EVENTS");
+  if (capacity_text != NULL && capacity_text[0] != '\0') {
+    char *end = NULL;
+    unsigned long parsed = strtoul(capacity_text, &end, 10);
+
+    if (end != capacity_text && *end == '\0' && parsed > 0
+        && parsed <= 1000000UL) capacity = (uintnat)parsed;
+  }
+  scheduler->trace_events = calloc(capacity, sizeof(*scheduler->trace_events));
+  if (scheduler->trace_events == NULL) {
+    trace_fail(scheduler, "cannot allocate event buffer");
+    return;
+  }
+  scheduler->trace_output = fopen(path, "w");
+  if (scheduler->trace_output == NULL) {
+    trace_fail(scheduler, "cannot open output");
+    free(scheduler->trace_events);
+    scheduler->trace_events = NULL;
+    return;
+  }
+  scheduler->trace_capacity = capacity;
+  scheduler->trace_next_message = 1;
+  if (fprintf(scheduler->trace_output,
+      "{\"event\":\"world_start\",\"schema\":1,\"seq\":0,"
+      "\"word_bytes\":%u,\"actor_capacity\":%llu,"
+      "\"reduction_budget\":%llu,\"message_word_limit\":%llu,"
+      "\"mailbox_message_limit\":%llu,\"mailbox_byte_limit\":%llu,"
+      "\"monitor_limit\":%llu}\n",
+      (unsigned)(sizeof(value)), (unsigned long long)scheduler->capacity,
+      (unsigned long long)scheduler->reduction_budget,
+      (unsigned long long)scheduler->message_quota_words,
+      (unsigned long long)scheduler->mailbox_message_limit,
+      (unsigned long long)scheduler->mailbox_byte_limit,
+      (unsigned long long)scheduler->monitor_limit) < 0) {
+    trace_fail(scheduler, "cannot write header");
+  }
+  if (!scheduler->trace_failed && fflush(scheduler->trace_output) != 0) {
+    trace_fail(scheduler, "cannot flush header");
+  }
+}
+
+void caml_actor_scheduler_trace_flush(struct caml_actor_scheduler *scheduler)
+{
+  if (scheduler == NULL || scheduler->trace_output == NULL
+      || scheduler->trace_failed) return;
+  if (!refresh_host_context(scheduler)) {
+    caml_fatal_error("actor trace flushed outside its host context");
+  }
+  for (uintnat index = 0; index < scheduler->trace_count; index++) {
+    if (!trace_write_event(scheduler->trace_output,
+                           &scheduler->trace_events[index])) {
+      trace_fail(scheduler, "cannot write event");
+      break;
+    }
+  }
+  scheduler->trace_count = 0;
+  if (!scheduler->trace_failed && fflush(scheduler->trace_output) != 0) {
+    trace_fail(scheduler, "cannot flush events");
+  }
+}
+
+void caml_actor_scheduler_trace_finish(
+  struct caml_actor_scheduler *scheduler, const char *outcome)
+{
+  if (scheduler == NULL || scheduler->trace_output == NULL) return;
+  caml_actor_scheduler_trace_flush(scheduler);
+  if (!scheduler->trace_failed) {
+    if (fprintf(scheduler->trace_output,
+      "{\"event\":\"world_end\",\"schema\":1,\"seq\":%llu,"
+      "\"outcome\":\"%s\",\"events_dropped\":%llu,"
+      "\"complete\":%s}\n",
+      (unsigned long long)(scheduler->trace_next_sequence + 1),
+      outcome == NULL ? "unknown" : outcome,
+      (unsigned long long)scheduler->trace_dropped,
+      scheduler->trace_dropped == 0 ? "true" : "false") < 0) {
+      trace_fail(scheduler, "cannot write footer");
+    } else if (fflush(scheduler->trace_output) != 0) {
+      trace_fail(scheduler, "cannot flush footer");
+    }
+  }
+}
+
 void caml_actor_scheduler_destroy(struct caml_actor_scheduler *scheduler)
 {
   struct caml_actor_monitor *monitor;
@@ -672,6 +947,8 @@ void caml_actor_scheduler_destroy(struct caml_actor_scheduler *scheduler)
   }
   CAMLassert(scheduler->monitor_count == 0);
   scheduler->domain->actor_scheduler = NULL;
+  if (scheduler->trace_output != NULL) fclose(scheduler->trace_output);
+  free(scheduler->trace_events);
   free(scheduler->slots);
   free(scheduler);
 }
@@ -995,10 +1272,13 @@ int caml_actor_scheduler_commit_prepared(
   struct caml_actor_slot *slot;
   int root;
   int context_matches;
+  uintnat parent_pid;
+  uintnat trace_data[8] = { 0 };
 
   if (prepared == NULL || prepared->scheduler == NULL) return 0;
   scheduler = prepared->scheduler;
   root = prepared->parent_index == ACTOR_SLOT_NONE;
+  parent_pid = root ? 0 : scheduler->slots[prepared->parent_index].pid;
   context_matches = root
     ? refresh_host_context(scheduler) : running_context_matches(scheduler);
   if (!context_matches || prepared->index >= scheduler->capacity
@@ -1030,6 +1310,12 @@ int caml_actor_scheduler_commit_prepared(
   if (root) scheduler->root_published = 1;
   increment_counter(&scheduler->total_spawned);
   enqueue_tail(scheduler, prepared->index);
+  trace_data[0] = caml_actor_heap_used_words(slot->heap);
+  trace_data[1] = caml_actor_heap_capacity_words(slot->heap);
+  trace_data[2] = caml_actor_heap_quota_words(slot->heap);
+  trace_record(scheduler, CAML_ACTOR_TRACE_SPAWN, slot->pid, parent_pid, 0,
+               trace_data);
+  trace_record_state(scheduler, slot);
   free(prepared);
   return 1;
 }
@@ -1072,10 +1358,17 @@ struct caml_actor_step caml_actor_scheduler_step(
     return step;
   }
   for (uint32_t pending = 0; pending < scheduler->capacity; pending++) {
-    const struct caml_actor_slot *candidate = &scheduler->slots[pending];
+    struct caml_actor_slot *candidate = &scheduler->slots[pending];
 
     if (candidate->lifecycle == CAML_ACTOR_LIFECYCLE_FAILED
         && candidate->failure == CAML_ACTOR_FAILURE_CANCELLED) {
+      uintnat trace_data[8] = { 0 };
+
+      trace_record_state(scheduler, candidate);
+      trace_data[0] = candidate->failure;
+      trace_data[1] = candidate->mailbox_length;
+      trace_record(scheduler, CAML_ACTOR_TRACE_EXIT,
+                   candidate->pid, 0, 0, trace_data);
       step.pid = candidate->pid;
       step.reason = CAML_ACTOR_STEP_FAILED;
       return step;
@@ -1092,6 +1385,7 @@ struct caml_actor_step caml_actor_scheduler_step(
   increment_counter(&scheduler->total_dispatches);
   memset(&slot->unsupported, 0, sizeof(slot->unsupported));
   scheduler->current = index;
+  trace_record_state(scheduler, slot);
   CAMLassert(scheduler->control_request == CAML_ACTOR_CONTROL_NONE);
   domain->current_stack = slot->stack;
   domain->local_roots = NULL;
@@ -1207,6 +1501,16 @@ struct caml_actor_step caml_actor_scheduler_step(
       step.reason = CAML_ACTOR_STEP_FAILED;
       break;
   }
+  trace_record_state(scheduler, slot);
+  if (slot->lifecycle == CAML_ACTOR_LIFECYCLE_EXITED
+      || slot->lifecycle == CAML_ACTOR_LIFECYCLE_FAILED) {
+    uintnat trace_data[8] = { 0 };
+
+    trace_data[0] = slot->failure;
+    trace_data[1] = slot->mailbox_length;
+    trace_record(scheduler, CAML_ACTOR_TRACE_EXIT, slot->pid, 0, 0,
+                 trace_data);
+  }
   return step;
 }
 
@@ -1278,6 +1582,20 @@ int caml_actor_scheduler_record_mailbox_quota_failure(
   return 1;
 }
 
+void caml_actor_scheduler_trace_send_rejected(
+  struct caml_actor_scheduler *scheduler, uintnat pid,
+  enum caml_actor_trace_send_rejection reason)
+{
+  uintnat data[8] = { 0 };
+  uintnat source_pid;
+
+  if (!running_context_matches(scheduler)) return;
+  source_pid = scheduler->slots[scheduler->current].pid;
+  data[0] = reason;
+  trace_record(scheduler, CAML_ACTOR_TRACE_SEND_REJECTED,
+               source_pid, pid, 0, data);
+}
+
 enum caml_actor_send_status caml_actor_scheduler_prepare_send(
   struct caml_actor_scheduler *scheduler, uintnat pid,
   struct caml_actor_envelope *envelope,
@@ -1310,6 +1628,9 @@ enum caml_actor_send_status caml_actor_scheduler_prepare_send(
   prepared->target_pid = pid;
   prepared->envelope = envelope;
   prepared->encoded_bytes = encoded_bytes;
+  if (scheduler->trace_output != NULL && !scheduler->trace_failed) {
+    prepared->source_pid = scheduler->slots[scheduler->current].pid;
+  }
   *prepared_out = prepared;
   return CAML_ACTOR_SEND_OK;
 }
@@ -1363,6 +1684,10 @@ int caml_actor_scheduler_commit_send(
     return 0;
   }
   prepared->scheduler = NULL;
+  if (scheduler->trace_output != NULL && !scheduler->trace_failed) {
+    prepared->message_sequence = scheduler->trace_next_message++;
+    if (scheduler->trace_next_message == 0) scheduler->trace_next_message = 1;
+  }
   prepared->next = NULL;
   if (slot->mailbox_tail == NULL) {
     slot->mailbox_head = prepared;
@@ -1378,6 +1703,16 @@ int caml_actor_scheduler_commit_send(
   if (slot->lifecycle == CAML_ACTOR_LIFECYCLE_BLOCKED) {
     slot->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNABLE;
     enqueue_tail(scheduler, prepared->target_index);
+  }
+  {
+    uintnat trace_data[8] = { 0 };
+
+    trace_data[0] = encoded_bytes;
+    trace_data[1] = slot->mailbox_length;
+    trace_data[2] = slot->mailbox_bytes;
+    trace_record(scheduler, CAML_ACTOR_TRACE_SEND,
+                 prepared->source_pid, prepared->target_pid,
+                 prepared->message_sequence, trace_data);
   }
 #ifdef DEBUG
   CAMLassert(scheduler_mailboxes_valid(scheduler));
@@ -1407,11 +1742,19 @@ int caml_actor_scheduler_consume_current_message(
 {
   struct caml_actor_prepared_send *message;
   struct caml_actor_slot *slot;
+  uintnat source_pid;
+  uintnat target_pid;
+  uintnat message_sequence;
+  uintnat encoded_bytes;
 
   if (!running_context_matches(scheduler)) return 0;
   slot = &scheduler->slots[scheduler->current];
   message = slot->mailbox_head;
   if (message == NULL || slot->mailbox_length == 0) return 0;
+  source_pid = message->source_pid;
+  target_pid = message->target_pid;
+  message_sequence = message->message_sequence;
+  encoded_bytes = message->encoded_bytes;
   slot->mailbox_head = message->next;
   if (slot->mailbox_head == NULL) slot->mailbox_tail = NULL;
   slot->mailbox_length--;
@@ -1421,6 +1764,15 @@ int caml_actor_scheduler_consume_current_message(
   scheduler->mailbox_messages--;
   CAMLassert(scheduler->mailbox_bytes >= message->encoded_bytes);
   scheduler->mailbox_bytes -= message->encoded_bytes;
+  {
+    uintnat trace_data[8] = { 0 };
+
+    trace_data[0] = encoded_bytes;
+    trace_data[1] = slot->mailbox_length;
+    trace_data[2] = slot->mailbox_bytes;
+    trace_record(scheduler, CAML_ACTOR_TRACE_RECEIVE,
+                 source_pid, target_pid, message_sequence, trace_data);
+  }
   caml_actor_wire_destroy(message->envelope);
   free(message);
 #ifdef DEBUG
@@ -1818,6 +2170,17 @@ int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,
   CAMLassert(!slot->queued);
   publish_exit_to_monitors(scheduler, slot);
   discard_watcher_monitors(scheduler, pid);
+  for (struct caml_actor_prepared_send *message = slot->mailbox_head;
+       message != NULL; message = message->next) {
+    uintnat trace_data[8] = { 0 };
+
+    trace_data[0] = message->encoded_bytes;
+    trace_data[1] = slot->mailbox_length;
+    trace_data[2] = slot->mailbox_bytes;
+    trace_record(scheduler, CAML_ACTOR_TRACE_DROP,
+                 message->source_pid, message->target_pid,
+                 message->message_sequence, trace_data);
+  }
   CAMLassert(scheduler->mailbox_messages >= slot->mailbox_length);
   CAMLassert(scheduler->mailbox_bytes >= slot->mailbox_bytes);
   add_counter(&scheduler->messages_dropped, slot->mailbox_length);
