@@ -215,7 +215,8 @@ OCaml 5.5.0 (19 June 2026)
   a fail-closed primitive capability policy, audited actor-local Stdlib
   slices, receiver-owned mailbox copies of approved frozen graphs, controlled
   elastic semispace growth, an Astring package canary, an advisory
-  bytecode-inventory checker, and an explicit unsupported-operation boundary.
+  bytecode-inventory checker, deterministic pointer-free actor tracing and a
+  local replay viewer, and an explicit unsupported-operation boundary.
   (Dennis Dang)
 
 - #14365: Add an Idle phase to the GC for better performance on small
