@@ -336,11 +336,125 @@ and eight platform- or event-specific checks skipped as expected.
 
 ### Current next action
 
-Begin Layer 13 with a red one-for-one supervision contract built only on the
-published monitor and cancellation boundaries. Keep restart ordering and
-resource limits explicit; do not add links or trap-exit semantics implicitly.
+Begin Layer 13 with a red deterministic tracing contract for scheduler-owned,
+pointer-free actor lifecycle, message, mailbox, and heap events. Preserve the
+published monitor and cancellation boundaries, and require tracing to be
+strictly opt-in before beginning supervision.
 
-## Layer 13: supervision
+## Layer 13: deterministic tracing and visualization
+
+Add an opt-in trace stream that is sufficient to reconstruct an actor world
+without exposing actor-heap pointers or message payloads. Tracing is an
+observability facility only: enabling, disabling, overflowing, or losing the
+trace destination must not change actor publication, scheduling, message
+delivery, failure, or retirement semantics.
+
+### Trace contract
+
+Every trace begins with a versioned world header and uses a monotonically
+increasing logical event sequence rather than wall-clock time. The initial
+schema covers:
+
+- world configuration and completion;
+- generation-tagged actor identity and parent identity at committed spawn;
+- runnable, running, blocked, exited, and failed lifecycle transitions;
+- committed sends and consumed receives correlated by message sequence;
+- encoded message bytes and destination mailbox message/byte counts;
+- per-actor used, committed, and maximum heap words, plus collection and
+  growth counts; and
+- exit reason kind and queued messages discarded during retirement.
+
+Trace records contain only bounded scalar data, enums, and generation-tagged
+integer identities. They never contain OCaml values, message contents, heap
+addresses, raw pointers, exception summaries, or backtraces. Human-readable
+actor labels are deferred; the first viewer derives stable display names from
+the root identity and PID slot/generation.
+
+### Runtime boundary
+
+Recording uses a bounded scheduler-owned buffer and never allocates in an
+actor heap. Events are published at existing transactional boundaries:
+
+1. Record a spawn only after the actor and PID are committed.
+2. Record a send only after its envelope is linked into the destination
+   mailbox; rejected and aborted sends never appear as delivered edges.
+3. Retain the sender PID and logical message sequence in scheduler-owned
+   prepared-send metadata so receive and drop events can identify the same
+   message without inspecting its payload.
+4. Record a receive only after successful receiver-heap decode and mailbox
+   consumption.
+5. Sample lifecycle and heap state only at scheduler boundaries, after the
+   actor heap has been deactivated and verified.
+6. Record exit and mailbox drops before heap destruction and PID generation
+   advancement.
+
+The first exporter is enabled from host context, for example with an
+`OCAML_ACTOR_TRACE` destination, and drains records between scheduler steps.
+It must not add a bootstrap-visible primitive or change `Actor.world_config`.
+Buffer overflow is explicit through a saturated dropped-event counter. An
+allocation or output failure disables further tracing and reports an
+incomplete trace without changing the actor-world result.
+
+### Viewer boundary
+
+Build the viewer as a separate local tool consuming the versioned trace. It
+must support completed-file replay first and live tailing second. The initial
+view provides:
+
+- one node per generation-tagged actor with parent-child placement;
+- animated, correlated send/receive edges;
+- used, committed, and maximum heap levels per actor;
+- scheduler lifecycle and mailbox pressure;
+- pause, scrub, replay speed, and actor inspection; and
+- an unavoidable incomplete-trace indication when events were dropped or the
+  exporter failed.
+
+The viewer does not link into the runtime and is not part of actor-world
+correctness. A recorded trace remains useful without the viewer, and the
+viewer must reject unsupported schema versions rather than guessing.
+
+### Work sequence
+
+1. Add the versioned pointer-free trace schema, deterministic encoder, and
+   golden replay fixtures.
+2. Record committed spawn, lifecycle, exit, and retirement events, including
+   PID-reuse stress coverage.
+3. Correlate committed send, consumed receive, rejection, and mailbox-drop
+   outcomes without weakening transactional publication.
+4. Add safe-boundary per-actor heap and mailbox samples using existing heap
+   accounting.
+5. Add the bounded host-side exporter, explicit overflow/error reporting, and
+   disabled-path overhead checks.
+6. Build completed-file replay, then live tailing, and validate dense graphs
+   with hundreds of actors.
+7. Re-run the full Layer 12 normal, debug, instrumented, sanitizer, package,
+   benchmark, hygiene, and fresh-runner gates before publishing the layer.
+
+### Milestone tracker
+
+- [x] Freeze and document the versioned trace schema and privacy boundary.
+- [x] Prove committed-only spawn/send/receive ordering and pre-retirement exit
+      ordering with deterministic runtime tests.
+- [x] Expose actual used heap words separately from committed capacity and the
+      configured maximum for every live actor.
+- [x] Bound trace memory and make overflow and exporter failure observable but
+      semantically inert.
+- [x] Pass PID-reuse, mailbox-drop, quota, cancellation, deadlock, and
+      heap-exhaustion trace tests.
+- [x] Ship deterministic replay and live visualization without linking the
+      viewer into the runtime.
+- [ ] Pass the full compatibility, performance, sanitizer, and publication
+      gates with tracing disabled and enabled.
+
+### Current next action
+
+The schema, runtime instrumentation, failure coverage, and real-trace viewer
+are implemented on `actor-real/13-tracing-visualization`. Complete the full
+sanitizer, compatibility, performance, and publication gates before marking
+the layer published. The renamed `actor-real/14-supervision` branch must start
+from that published tip.
+
+## Layer 14: supervision
 
 Build supervision on monitors rather than special scheduler shortcuts:
 
@@ -354,7 +468,7 @@ Build supervision on monitors rather than special scheduler shortcuts:
 Links, trap-exit behavior, and selective receive remain deferred unless the
 reference service demonstrates that they are necessary.
 
-## Layer 14: timers and scheduler event waiting
+## Layer 15: timers and scheduler event waiting
 
 Add scheduler-owned monotonic timers and cancellation. Waiting on a timer or
 external event must not be diagnosed as actor deadlock. Tests must use a
@@ -364,7 +478,7 @@ The scheduler should then wait for the earliest timer or I/O event when there
 is no runnable actor, while retaining deterministic replay for injected event
 sequences.
 
-## Layer 15: scheduler-owned nonblocking I/O
+## Layer 16: scheduler-owned nonblocking I/O
 
 Add a minimal nonblocking TCP surface backed by a scheduler reactor (initially
 Linux `epoll`):
@@ -378,7 +492,7 @@ Linux `epoll`):
 
 No actor may block the scheduler thread in an ordinary I/O primitive.
 
-## Layer 16: reference service and hardening
+## Layer 17: reference service and hardening
 
 The acceptance application is a supervised line-oriented TCP key/value
 service with separate modules:

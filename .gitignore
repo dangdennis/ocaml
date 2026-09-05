@@ -336,3 +336,7 @@ META
 /yacc/ocamlyacc
 /yacc/version.h
 /yacc/.gdb_history
+
+# Local heap-isolated actor trace viewer output
+/actor-trace.ndjson
+/actor_trace_*.ndjson
