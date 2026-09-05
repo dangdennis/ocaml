@@ -105,6 +105,13 @@ enum caml_actor_send_status {
   CAML_ACTOR_SEND_INVALID_CONTEXT
 };
 
+enum caml_actor_trace_send_rejection {
+  CAML_ACTOR_TRACE_REJECT_MISSING = 0,
+  CAML_ACTOR_TRACE_REJECT_QUOTA,
+  CAML_ACTOR_TRACE_REJECT_UNSUPPORTED,
+  CAML_ACTOR_TRACE_REJECT_RESOURCE
+};
+
 enum caml_actor_monitor_status {
   CAML_ACTOR_MONITOR_OK = 0,
   CAML_ACTOR_MONITOR_MISSING,
@@ -191,6 +198,12 @@ CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   uintnat mailbox_byte_limit, uintnat monitor_limit);
 CAMLextern void caml_actor_scheduler_destroy(
   struct caml_actor_scheduler *scheduler);
+CAMLextern void caml_actor_scheduler_trace_enable_from_environment(
+  struct caml_actor_scheduler *scheduler);
+CAMLextern void caml_actor_scheduler_trace_flush(
+  struct caml_actor_scheduler *scheduler);
+CAMLextern void caml_actor_scheduler_trace_finish(
+  struct caml_actor_scheduler *scheduler, const char *outcome);
 
 CAMLextern enum caml_actor_spawn_status caml_actor_scheduler_spawn_root_code(
   struct caml_actor_scheduler *scheduler,
@@ -243,6 +256,9 @@ CAMLextern int caml_actor_scheduler_message_quota_words(
   struct caml_actor_scheduler *scheduler, mlsize_t *quota_words);
 CAMLextern int caml_actor_scheduler_record_mailbox_quota_failure(
   struct caml_actor_scheduler *scheduler);
+CAMLextern void caml_actor_scheduler_trace_send_rejected(
+  struct caml_actor_scheduler *scheduler, uintnat pid,
+  enum caml_actor_trace_send_rejection reason);
 CAMLextern enum caml_actor_send_status caml_actor_scheduler_prepare_send(
   struct caml_actor_scheduler *scheduler, uintnat pid,
   struct caml_actor_envelope *envelope,
