@@ -38,6 +38,41 @@ let () =
     0x860f53667996eed4L;
   ]);
 
+  (* Binary choices must include repeated actors, not just alternation. *)
+  let random = Prng.create default_seed in
+  let choices = List.init 32 (fun _ -> Prng.int random 2) in
+  let rec repeated value = function
+    | a :: (b :: _ as rest) ->
+        (a = value && b = value) || repeated value rest
+    | _ -> false
+  in
+  require (repeated 0 choices && repeated 1 choices);
+  (* This vector includes a rejected draw at the tenth choice. Check the
+     following raw state too, so replacing rejection with modulo fails. *)
+  let random = Prng.create default_seed in
+  require (List.init 12 (fun _ -> Prng.int random 3) =
+           [2; 1; 1; 1; 0; 0; 1; 1; 0; 2; 2; 1]);
+  let raw = Prng.create default_seed in
+  for _ = 1 to 13 do ignore (Prng.next_u64 raw) done;
+  require (Prng.next_u64 random = Prng.next_u64 raw);
+  let one = Prng.create default_seed and raw = Prng.create default_seed in
+  require (Prng.int one 1 = 0);
+  ignore (Prng.next_u64 raw);
+  require (Prng.next_u64 one = Prng.next_u64 raw);
+  List.iter (fun bound ->
+    let a = Prng.create default_seed and b = Prng.create default_seed in
+    for _ = 1 to 100 do
+      let choice = Prng.int a bound in
+      require (choice >= 0 && choice < bound);
+      require (choice = Prng.int b bound)
+    done) [1; 2; 3; 10; max_int];
+  List.iter (fun bound ->
+    let rejected =
+      try ignore (Prng.int (Prng.create default_seed) bound); false
+      with Invalid_argument _ -> true
+    in
+    require rejected) [0; -1; min_int];
+
   let expected = trace ~seed:default_seed [
     event ~step:0 ~actor:1 ~op:"spawn"
       ["z", "space value"; "child", "2"];

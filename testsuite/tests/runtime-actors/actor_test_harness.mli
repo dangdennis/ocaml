@@ -14,6 +14,11 @@ module Prng : sig
   val create : seed -> t
   val next_u64 : t -> int64
   val int : t -> int -> int
+  (** [int rng bound] returns an integer from zero up to but excluding [bound],
+      using high bits and rejection sampling. [bound] must be positive.
+      Each call advances the generator at
+      least once, including when [bound] is one. This is a deterministic test
+      generator, not a cryptographic source. *)
 end
 
 type event = {

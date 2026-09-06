@@ -48,8 +48,24 @@ module Prng = struct
 
   let int t bound =
     if bound <= 0 then invalid_arg "Actor_test_harness.Prng.int";
-    let positive = Int64.logand (next_u64 t) Int64.max_int in
-    Int64.to_int (Int64.rem positive (Int64.of_int bound))
+    let rec bit_count value count =
+      if value = 0 then count else bit_count (value lsr 1) (count + 1)
+    in
+    let bits = bit_count (bound - 1) 0 in
+    if bits = 0 then begin
+      ignore (next_u64 t);
+      0
+    end else begin
+      (* The low bits of this recurrence have short periods. Take the high
+         bits instead, and reject the unused part of the power-of-two range
+         so non-power-of-two bounds do not introduce modulo bias. *)
+      let rec draw () =
+        let choice = Int64.to_int
+            (Int64.shift_right_logical (next_u64 t) (64 - bits)) in
+        if choice < bound then choice else draw ()
+      in
+      draw ()
+    end
 end
 
 type event = {
