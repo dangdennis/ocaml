@@ -512,14 +512,26 @@ deferred because links and general wait sets are still outside the contract.
 - [x] Prove one-for-one sibling preservation and reverse-order shutdown.
 - [x] Cover start/restart quota failure and root-supervisor cleanup.
 - [x] Pass 200-generation PID-reuse, structured-failure, and tracing stress.
-- [ ] Pass the full compatibility, sanitizer, package, benchmark, hygiene, and
+- [x] Pass the full compatibility, sanitizer, package, benchmark, hygiene, and
       fresh-runner publication gates.
+
+### Validation checkpoint
+
+Layer 14 closed at implementation tip `cb66c61625`. Fresh-runner Actor Runtime
+(`34002422543`), Hygiene (`34002422475`), full Build (`34002422526`), and MSVC
+(`34002422484`) workflows passed at that exact tip: 35 checks passed and eight
+platform- or event-specific checks skipped as expected. Normal, debug,
+instrumented, ASan, and UBSan actor suites each passed 35 tests with the one
+expected native-runtime skip. Compatibility suites, the Astring package
+canary, benchmark smoke, supervision stress, cleanup, tracing, and PID-reuse
+checks all passed.
 
 ### Current next action
 
-Run the full publication matrix at the exact implementation tip, then record
-the workflow IDs and begin Layer 15 timers only from the published Layer 14
-tip.
+Begin Layer 15 timers from the published Layer 14 tip. Start with
+scheduler-owned monotonic timer identities, cancellation, and a deterministic
+clock seam before integrating timer readiness into scheduler deadlock and event
+waiting.
 
 ## Layer 15: timers and scheduler event waiting
 
