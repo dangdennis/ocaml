@@ -259,12 +259,15 @@ void caml_bytecode_state_init(struct caml_bytecode_state *state,
 {
   caml_domain_state *domain_state = Caml_state;
   value *sp = domain_state->current_stack->sp;
+  const asize_t required = 4 + Stack_threshold_words;
 
   if (state == NULL || prog == NULL) {
     caml_fatal_error("invalid resumable bytecode initialization");
   }
-  if (sp - 4 < Stack_base(domain_state->current_stack)) {
-    if (!caml_try_realloc_stack(4)) caml_raise_stack_overflow();
+  /* A zero-budget resume can drain pending actions before any opcode's
+     stack check. Reserve interpreter headroom as well as the saved frame. */
+  if ((asize_t)(sp - Stack_base(domain_state->current_stack)) < required) {
+    if (!caml_try_realloc_stack(required)) caml_raise_stack_overflow();
     sp = domain_state->current_stack->sp;
   }
 

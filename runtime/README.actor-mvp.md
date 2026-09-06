@@ -90,13 +90,15 @@ a child whose copied initial graph exceeds its quota. `Message_too_large`
 reports an envelope quota violation. These quota checks happen before a child
 or envelope becomes visible.
 
-## PR 1 resumable-interpreter boundary
+## PR #2 resumable-interpreter boundary
 
 `caml_bytecode_interpreter_slice` is an internal mechanism, not an actor API.
 A reduction is one dispatch of a bytecode instruction. A finite budget is
 checked immediately before opcode fetch, so a zero budget executes no opcode
 and a budget of one executes at most one. Debugger restarts and the internal
 work needed to finish an opcode do not consume another reduction.
+This is an instruction budget, not a wall-clock deadline: C primitives and
+nested callbacks finish before the outer slice can stop.
 
 A reduction stop is observable only after the current opcode is complete.
 In particular, a `C_CALL*` opcode returns from its primitive, restores its C
@@ -111,6 +113,11 @@ used by the debugger:
 accumulator | next pc | environment | extra arguments
 ```
 
+Initialization reserves space for that frame and interpreter headroom. Even
+a zero-budget resume may need the six-word pending-action frame before any
+opcode-level stack check runs. Stack growth preserves saved entry depth as an
+offset from the stack's high end, rather than a pointer into the old storage.
+
 The GC scans and updates the two OCaml values in that frame. Each resume
 installs a fresh C exception context; no pointer into a returned C invocation
 is stored in the state. The initial stack depth and caller trap offset remain
@@ -118,7 +125,7 @@ fixed until terminal return. The active trap offset is captured at every stop;
 the caller offset is restored for the C interval and the active offset is
 reinstalled on resume.
 
-PR 1 deliberately supports only one suspended computation on the Domain's
+PR #2 deliberately supports only one suspended computation on the Domain's
 current stack, resumed synchronously from the same outer C invocation. It does
 not yet switch a suspended state away from the current stack, run unrelated
 OCaml code between slices, or preserve independent debugger and backtrace

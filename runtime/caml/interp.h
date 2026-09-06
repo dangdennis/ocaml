@@ -54,7 +54,9 @@ struct caml_bytecode_state {
 #define CAML_BYTECODE_REDUCTIONS_UNLIMITED CAML_UINTNAT_MAX
 
 /* These entry points are synchronous and Domain-local.  A suspended state
-   must remain on the Domain's current stack until the next resume. */
+   must remain on the Domain's current stack until the next resume.
+   Initialization may grow that stack to reserve the saved frame and
+   interpreter headroom, including for pending actions on a zero budget. */
 CAMLextern void caml_bytecode_state_init(
   struct caml_bytecode_state *state,
   code_t prog, asize_t prog_size,
