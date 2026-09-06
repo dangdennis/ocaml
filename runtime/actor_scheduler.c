@@ -1506,8 +1506,11 @@ int caml_actor_scheduler_wait(struct caml_actor_scheduler *scheduler)
   /* Never loop in the backend: interrupted waits return through the host
      fence. A pending host action must not cause an unbounded retry loop. */
   int result;
-  if (caml_check_pending_actions() && !caml_actor_world_is_frozen()) return -1;
+  if (caml_check_pending_signals()
+      || (caml_check_pending_actions() && !caml_actor_world_is_frozen()))
+    return -1;
   result = caml_actor_timers_wait(scheduler->timers, scheduler->wait_deadline);
+  if (caml_check_pending_signals()) return -1;
   if (result == 0) {
     if (++scheduler->wait_interruptions >= 64) return -1;
   } else scheduler->wait_interruptions = 0;

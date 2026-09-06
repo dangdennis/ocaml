@@ -9,6 +9,8 @@
 external clock : int -> unit = "caml_actor_test_timer_clock"
 external waits : unit -> int = "caml_actor_test_timer_waits"
 external real : unit -> unit = "caml_actor_test_timer_real"
+external signal_before_wait : unit -> unit = "caml_actor_test_timer_signal"
+external signal_mask : unit -> unit = "caml_actor_test_timer_signal_mask"
 let ok = function Ok x -> x | Error _ -> failwith "unexpected error"
 let world = function
   | Ok () -> ()
@@ -91,6 +93,23 @@ let () =
     | Error (Actor.Root_failed _) -> ()
     | _ -> failwith "backend failure was not contained") [2; 3; 4; 6; 7];
   assert (waits () = 64);
+  let signals = ref 0 in
+  let old_handler = Sys.signal Sys.sigusr1 (Sys.Signal_handle (fun _ ->
+    incr signals)) in
+  clock 8;
+  (match Actor.run (fun _ -> ok (Actor.Timer.sleep 1.)) with
+   | Error (Actor.Root_failed _) -> ()
+   | _ -> failwith "signal wait was not contained");
+  Gc.minor ();
+  assert (!signals = 1 && waits () = 1);
+  signal_before_wait ();
+  (match Actor.run (fun _ -> ok (Actor.Timer.sleep 60.)) with
+   | Error (Actor.Root_failed _) -> ()
+   | _ -> failwith "kernel signal wait was not contained");
+  Gc.minor ();
+  assert (!signals = 2);
+  signal_mask ();
+  Sys.set_signal Sys.sigusr1 old_handler;
   real ();
   world (Actor.run (fun _ -> ok (Actor.Timer.sleep 0.001)));
   print_endline "actor timers: ok"

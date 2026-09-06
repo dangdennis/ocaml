@@ -61,6 +61,7 @@ CAMLextern void caml_actor_timers_retire(struct caml_actor_timers *, uintnat);
 CAMLextern void caml_actor_timers_stats(const struct caml_actor_timers *,
                                      struct caml_actor_timer_stats *);
 /* Host-only test seams, never admitted as actor primitives. */
+CAMLextern void caml_actor_timers_test_signal_before_wait(void);
 CAMLextern void caml_actor_timers_test_fail_allocation(
   struct caml_actor_timers *);
 CAMLextern void caml_actor_timers_test_exhaust_identity(
