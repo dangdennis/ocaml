@@ -178,19 +178,47 @@ static int grow(struct caml_actor_timers *t)
   t->records = records; t->heap = heap; t->capacity = capacity;
   return 1;
 }
+/* Compute ceil(seconds * 10^9) exactly for the binary64 input. Multiplying
+   doubles first can round DOWN by many nanoseconds at large durations. Split
+   the 53-bit significand product into two 64-bit limbs (also portable to MSVC). */
+static int duration_ticks(double seconds, uint64_t *duration)
+{
+  int exponent, shift;
+  uint64_t significand, low_product, high_product, low, high, ticks, remainder;
+  if (!isfinite(seconds) || seconds < 0.) return 0;
+  if (seconds == 0.) { *duration = 0; return 1; }
+  significand = (uint64_t)ldexp(frexp(seconds, &exponent), 53);
+  shift = 53 - exponent;
+  if (shift <= 0) return 0;
+  low_product = (significand & UINT32_MAX) * UINT64_C(1000000000);
+  high_product = (significand >> 32) * UINT64_C(1000000000);
+  low = low_product + (high_product << 32);
+  high = (high_product >> 32) + (low < low_product);
+  if (shift >= 128) { *duration = 1; return 1; }
+  if (shift >= 64) {
+    unsigned upper_shift = (unsigned)shift - 64;
+    ticks = high >> upper_shift;
+    remainder = low | (high & ((UINT64_C(1) << upper_shift) - 1));
+  } else {
+    if ((high >> shift) != 0) return 0;
+    ticks = (low >> shift) | (high << (64 - shift));
+    remainder = low & ((UINT64_C(1) << shift) - 1);
+  }
+  if (remainder != 0) {
+    if (ticks == UINT64_MAX) return 0;
+    ticks++;
+  }
+  *duration = ticks;
+  return 1;
+}
+
 enum caml_actor_timer_status caml_actor_timer_after(
   struct caml_actor_timers *t, uintnat owner, double seconds, uintnat *id)
 {
   uint64_t now, duration;
-  double ticks;
   uintnat index;
   struct timer_record *r;
-  if (!isfinite(seconds) || seconds < 0.) return CAML_ACTOR_TIMER_DURATION;
-  ticks = ceil(seconds * 1000000000.);
-  /* 2^64 is exactly representable, UINT64_MAX is not. */
-  if (!isfinite(ticks) || ticks >= 18446744073709551616.)
-    return CAML_ACTOR_TIMER_DURATION;
-  duration = (uint64_t)ticks;
+  if (!duration_ticks(seconds, &duration)) return CAML_ACTOR_TIMER_DURATION;
   if (t->backend.now == NULL || t->backend.wait == NULL)
     return CAML_ACTOR_TIMER_UNSUPPORTED;
   if (!sample(t, &now)) return CAML_ACTOR_TIMER_CLOCK_ERROR;
@@ -263,10 +291,14 @@ int caml_actor_timers_poll(struct caml_actor_timers *t, uintnat budget,
 int caml_actor_timers_wait(struct caml_actor_timers *t, uint64_t deadline)
 {
   int result;
+  uint64_t now;
   if (t->failed || t->backend.wait == NULL) return -1;
   result = t->backend.wait(t->backend.context, deadline);
-  if (result < 0) t->failed = 1;
-  return result;
+  if (result < 0 || !sample(t, &now)) {
+    t->failed = 1;
+    return -1;
+  }
+  return result > 0 && now >= deadline ? 1 : 0;
 }
 void caml_actor_timers_retire(struct caml_actor_timers *t, uintnat owner)
 {

@@ -30,6 +30,14 @@ CAMLprim value caml_actor_test_timer_store(value unit)
   uint64_t deadline;
   (void)unit;
   CHECK(t != NULL);
+  /* A double multiplication rounds this deadline down by 43 ns. */
+  CHECK(caml_actor_timer_after(t, 9, 871608144.2333723, &a)
+        == CAML_ACTOR_TIMER_OK);
+  CHECK(caml_actor_timer_peek(t, 9, a, &deadline) == CAML_ACTOR_TIMER_PENDING);
+  CHECK(deadline == UINT64_C(871608144233372331));
+  caml_actor_timer_consume(t, 9, a, 1);
+  caml_actor_timers_destroy(t);
+  t = caml_actor_timers_create(4, &b);
   CHECK(caml_actor_timer_after(t, 9, -1., &a) == CAML_ACTOR_TIMER_DURATION);
   CHECK(caml_actor_timer_after(t, 9, NAN, &a) == CAML_ACTOR_TIMER_DURATION);
   CHECK(caml_actor_timer_after(t, 9, INFINITY, &a) == CAML_ACTOR_TIMER_DURATION);
