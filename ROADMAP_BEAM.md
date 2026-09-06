@@ -60,7 +60,7 @@ part of the current roadmap.
 | Layer 12: structured exits and monitors | `actor-real/12-structured-exits`, PR #15 | Complete and published as a stacked draft |
 | Layer 13: deterministic tracing | `actor-real/13-tracing-visualization`, PR #16 | Complete and published as a stacked draft |
 | Layer 14: supervision | `actor-real/14-supervision`, PR #17 | Complete and published as a stacked draft |
-| Layer 15: timers and scheduler waiting | `codex/15-timers` | Implementation under validation |
+| Layer 15: timers and scheduler waiting | `codex/15-timers`, PR #18 | Complete and published as a stacked draft |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -562,13 +562,39 @@ supervisor's injected clock remain unchanged.
 - [x] Timer-aware idle waiting, stable expiry, and runnable-load progress.
 - [x] Duration rounding, quota, clock failure, interruption, and reuse tests.
 - [x] Schema v2 timer tracing with v1 viewer compatibility.
-- [ ] Complete sanitizer, compatibility, benchmark, hygiene, and fresh-runner gates.
-- [ ] Publish and close the stacked Layer 15 draft with exact-tip evidence.
+- [x] Complete sanitizer, compatibility, benchmark, hygiene, and fresh-runner gates.
+- [x] Publish the stacked Layer 15 draft with exact-tip implementation evidence.
+
+### Validation checkpoint
+
+Layer 15 closed at implementation tip `bd1376229a`, stacked on the Layer 14
+base `41d885448c` in draft PR #18. Fresh-runner Actor Runtime (`34016168375`),
+Hygiene (`34016168400`), full Build (`34016168404`), and MSVC (`34016168396`)
+workflows passed at that exact tip: 20 checks passed and eight event-specific
+checks skipped as expected.
+
+Normal, debug, instrumented, ASan, and UBSan actor suites each passed 39 tests
+with one expected native-runtime skip, both locally and on fresh runners.
+The Stdlib corpus, tooling suites, pinned Astring canary, actor/timer benchmark
+smoke, callback/backtrace/effects regressions, dependency generation, and manual
+and hygiene checks passed. The timer-heavy benchmark is a local gate; existing
+CI discovers all four new timer tests. Viewer checks cover trace schemas v1/v2,
+64-bit timer precision, cleanup, and incomplete/unsupported traces.
+
+Deterministic tests cover exact duration rounding, quota rollback, original
+deadlines across interrupted waits, owner rejection, 200-generation reuse,
+supervision, and zero live timer charges after cleanup. Signal tests cover
+pending host signals and arrival immediately before the kernel wait. Linux
+waiting uses `ppoll` with atomic signal-mask restoration, preserving the
+original monotonic deadline and deferring OCaml handlers until after thaw.
+
+The final documentation publication is checked again at its own PR head.
 
 ### Current next action
 
-Finish Layer 15 validation and publication. The next layer will add owned
-nonblocking TCP over the host event-wait seam; public general wait sets,
+Begin Layer 16 owned nonblocking TCP over the host event-wait seam. Preserve
+timer deadlines, cancellation priority, and owner cleanup while adding socket
+readiness to the idle backend. Public general wait sets,
 selective receive, timer callbacks/messages, and periodic timers remain deferred.
 
 ## Layer 16: scheduler-owned nonblocking I/O

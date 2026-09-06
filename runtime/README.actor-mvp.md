@@ -12,8 +12,9 @@ The planned MVP targets Linux x86-64, bytecode, one OS thread, and one
 runtime-owned scheduler. It must provide private actor heaps, FIFO mailboxes,
 reduction-based preemption, and actor-local failure. It is not a security
 sandbox. These are requirements for subsequent PRs, not capabilities of PR 1.
+Owned one-shot monotonic timers are additionally implemented in PR 17.
 
-Native code, multiple Domains, selective receive, links, timers, blocking I/O,
+Native code, multiple Domains, selective receive, links, blocking I/O,
 distribution, arbitrary C stubs, effects, and finalizers are out of scope.
 Unsupported operations fail closed; they never silently use shared runtime
 state.
@@ -295,8 +296,9 @@ receive, and public general wait sets are not provided.
 When the world is idle, a future timer actually awaited by a live blocked actor
 prevents deadlock. Unawaited or unconsumed ready timers do not keep a deadlocked
 world alive. The scheduler uses the earliest awaited deadline and returns to
-its host loop after each wait. Linux uses CLOCK_MONOTONIC and a zero-descriptor ppoll wait calculated from the
-original absolute deadline; system suspend is excluded. Signal masking and
+its host loop after each wait. Linux uses CLOCK_MONOTONIC and a zero-descriptor
+ppoll wait calculated from the original absolute deadline; system suspend is
+excluded. Signal masking and
 ppoll's atomic mask restoration close the arrival-before-wait race. The
 [Linux ppoll contract](https://man7.org/linux/man-pages/man2/poll.2.html)
 describes that atomic signal-mask boundary. No actor primitive sleeps the
