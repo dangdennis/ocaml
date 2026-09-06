@@ -225,3 +225,38 @@ external stats : unit -> stats
   = "caml_actor_stats"
 (** [stats ()] snapshots scheduler and mailbox counts. It raises
     [Invalid_argument] outside an actor world. *)
+
+module Supervisor : sig
+  type restart = Permanent | Transient | Temporary
+
+  type child = Child : {
+    id : string;
+    restart : restart;
+    start : int -> 'message inbox -> unit;
+    on_start : 'message pid -> unit;
+    on_exit : exit_reason -> unit;
+  } -> child
+
+  type intensity = {
+    max_restarts : int;
+    within : int;
+  }
+
+  type error =
+    | Invalid_configuration of string
+    | Initial_start_failed of string * spawn_monitored_error
+    | Restart_failed of string * spawn_monitored_error
+    | Restart_intensity_exceeded of string
+    | Restart_attempt_exhausted of string
+    | Clock_moved_backwards
+
+  val run_one_for_one :
+    clock:(unit -> int) -> intensity:intensity -> child list ->
+    (unit, error) result
+  (** [run_one_for_one ~clock ~intensity children] starts children in list
+      order and restarts only the child whose monitor reports an exit. Restart
+      accounting uses the supplied nonnegative monotonic clock. Terminal
+      failure cancels remaining children in reverse list order. This initial
+      contract is intended for the root actor; nested cascade semantics are
+      not provided. *)
+end
