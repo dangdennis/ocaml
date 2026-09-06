@@ -443,16 +443,24 @@ viewer must reject unsupported schema versions rather than guessing.
       heap-exhaustion trace tests.
 - [x] Ship deterministic replay and live visualization without linking the
       viewer into the runtime.
-- [ ] Pass the full compatibility, performance, sanitizer, and publication
+- [x] Pass the full compatibility, performance, sanitizer, and publication
       gates with tracing disabled and enabled.
+
+### Validation checkpoint
+
+Layer 13 closed at implementation tip `2d19e5a862`. Fresh-runner Actor Runtime
+(`33945765584`), Hygiene (`33945765578`), full Build (`33945765566`), and MSVC
+(`33945765561`) workflows passed at that exact tip: 35 checks passed and eight
+platform- or event-specific checks skipped as expected. The tracing-disabled
+and tracing-enabled actor gates, sanitizers, compatibility suites, package
+canary, benchmark smoke, deterministic replay, and viewer checks all passed.
 
 ### Current next action
 
-The schema, runtime instrumentation, failure coverage, and real-trace viewer
-are implemented on `actor-real/13-tracing-visualization`. Complete the full
-sanitizer, compatibility, performance, and publication gates before marking
-the layer published. The renamed `actor-real/14-supervision` branch must start
-from that published tip.
+Begin Layer 14 on `actor-real/14-supervision` from the published Layer 13 tip.
+Start with the smallest monitor substrate required to make child publication
+and multi-child exit observation race-free; supervision policy must remain
+ordinary actor code and must not depend on tracing.
 
 ## Layer 14: supervision
 
