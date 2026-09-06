@@ -13,6 +13,9 @@
 /**************************************************************************/
 
 #define CAML_INTERNALS
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <errno.h>
 #include <math.h>
 #include <stdint.h>
@@ -45,6 +48,11 @@ static void increment(uintnat *counter)
 }
 
 #if defined(__linux__) && !defined(NATIVE_CODE)
+#include <poll.h>
+#include <pthread.h>
+#include <signal.h>
+#include "caml/signals.h"
+static int test_signal_before_wait;
 static int real_now(void *context, uint64_t *now)
 {
   struct timespec ts;
@@ -58,14 +66,30 @@ static int real_now(void *context, uint64_t *now)
 static int real_wait(void *context, uint64_t deadline)
 {
   struct timespec ts;
-  int status;
+  sigset_t blocked, previous;
+  uint64_t now, remaining;
+  int status = -1, saved_errno = 0;
   (void)context;
-  ts.tv_sec = (time_t)(deadline / 1000000000);
-  ts.tv_nsec = (long)(deadline % 1000000000);
-  if (ts.tv_sec < 0 || (uint64_t)ts.tv_sec != deadline / 1000000000)
-    return -1;
-  status = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
-  return status == 0 ? 1 : status == EINTR ? 0 : -1;
+  sigfillset(&blocked);
+  if (pthread_sigmask(SIG_SETMASK, &blocked, &previous) != 0) return -1;
+  /* Checking while masked and atomically restoring the old mask in ppoll
+     closes the signal-arrival gap before an otherwise long timer wait. */
+  if (!caml_check_pending_signals() && real_now(NULL, &now)) {
+    remaining = deadline > now ? deadline - now : 0;
+    ts.tv_sec = (time_t)(remaining / 1000000000);
+    ts.tv_nsec = (long)(remaining % 1000000000);
+    if (ts.tv_sec >= 0 && (uint64_t)ts.tv_sec == remaining / 1000000000) {
+      if (test_signal_before_wait) {
+        test_signal_before_wait = 0;
+        raise(SIGUSR1);
+      }
+      status = ppoll(NULL, 0, &ts, &previous);
+      saved_errno = errno;
+      status = status == 0 ? 1 : saved_errno == EINTR ? 0 : -1;
+    }
+  }
+  if (pthread_sigmask(SIG_SETMASK, &previous, NULL) != 0) return -1;
+  return status;
 }
 #endif
 
@@ -320,4 +344,11 @@ void caml_actor_timers_test_fail_allocation(struct caml_actor_timers *t)
 void caml_actor_timers_test_exhaust_identity(struct caml_actor_timers *t)
 {
   t->exhausted = 1;
+}
+
+void caml_actor_timers_test_signal_before_wait(void)
+{
+#if defined(__linux__) && !defined(NATIVE_CODE)
+  test_signal_before_wait = 1;
+#endif
 }

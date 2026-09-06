@@ -295,8 +295,11 @@ receive, and public general wait sets are not provided.
 When the world is idle, a future timer actually awaited by a live blocked actor
 prevents deadlock. Unawaited or unconsumed ready timers do not keep a deadlocked
 world alive. The scheduler uses the earliest awaited deadline and returns to
-its host loop after each wait. Linux uses CLOCK_MONOTONIC and absolute-deadline
-clock_nanosleep; system suspend is excluded. No actor primitive sleeps the
+its host loop after each wait. Linux uses CLOCK_MONOTONIC and a zero-descriptor ppoll wait calculated from the
+original absolute deadline; system suspend is excluded. Signal masking and
+ppoll's atomic mask restoration close the arrival-before-wait race. The
+[Linux ppoll contract](https://man7.org/linux/man-pages/man2/poll.2.html)
+describes that atomic signal-mask boundary. No actor primitive sleeps the
 scheduler thread. The internal host backend supplies clock and wait operations
 and can later incorporate socket readiness. Native actor execution remains
 unsupported, and no unaudited wall-clock fallback is supplied.
@@ -304,7 +307,9 @@ unsupported, and no unaudited wall-clock fallback is supplied.
 Interrupted or early waits retain their deadline and resample monotonic time.
 After 64 consecutive incomplete waits the world fails with a bounded diagnostic
 rather than spin indefinitely. Pending host actions remain subject to the
-existing frozen-world fence; waiting never runs an arbitrary OCaml callback.
+existing frozen-world fence. Pending signals terminate the wait before another
+actor dispatch; the host mask is restored and OCaml signal handlers run only
+after thaw. Waiting never runs an arbitrary OCaml callback.
 A failing/backward clock or fatal wait error returns `Root_failed` and retires
 all world resources. Owner retirement and every world exit remove timer records
 before heap destruction or PID reuse. The supervisor's explicit integer clock

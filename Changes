@@ -211,7 +211,8 @@ OCaml 5.5.0 (19 June 2026)
 
 - Actor Layer 15: add owned monotonic timers with cancellation and finite
   quotas; distinguish timer waits from deadlock and unrelated mailbox/monitor
-  wakeups. Add deterministic clock tests and timer trace schema v2.
+  wakeups. Preserve the host signal boundary across idle waits. Add
+  deterministic clock tests and timer trace schema v2.
   (Dennis Dang, with implementation assistance from OpenAI Codex)
 
 - Add an experimental, Linux/amd64 bytecode-only actor runtime with isolated
