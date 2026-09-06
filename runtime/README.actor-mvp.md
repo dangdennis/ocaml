@@ -77,6 +77,10 @@ module Actor : sig
     | Initial_heap_limit
     | Unsupported_capture of string
 
+  type spawn_monitored_error =
+    | Monitored_spawn_error of spawn_error
+    | Monitored_monitor_limit
+
   type send_error =
     | No_such_actor
     | Message_too_large
@@ -121,14 +125,39 @@ module Actor : sig
     ('message pid, spawn_error) result
   val spawn_with_heap_limits : heap_limits ->
     ('message inbox -> unit) -> ('message pid, spawn_error) result
+  val spawn_monitored : ('message inbox -> unit) ->
+    (('message pid * monitor), spawn_monitored_error) result
   val monitor : _ pid -> (monitor, monitor_error) result
   val cancel : _ pid -> (unit, cancel_error) result
   val await_exit : monitor -> exit_reason
+  val await_any_exit : monitor list -> int * exit_reason
   val self : 'message inbox -> 'message pid
   val send : 'message pid -> 'message -> (unit, send_error) result
   val receive : 'message inbox -> 'message
   val yield : unit -> unit
   val stats : unit -> stats
+
+  module Supervisor : sig
+    type restart = Permanent | Transient | Temporary
+    type child = Child : {
+      id : string;
+      restart : restart;
+      start : int -> 'message inbox -> unit;
+      on_start : 'message pid -> unit;
+      on_exit : exit_reason -> unit;
+    } -> child
+    type intensity = { max_restarts : int; within : int }
+    type error =
+      | Invalid_configuration of string
+      | Initial_start_failed of string * spawn_monitored_error
+      | Restart_failed of string * spawn_monitored_error
+      | Restart_intensity_exceeded of string
+      | Restart_attempt_exhausted of string
+      | Clock_moved_backwards
+    val run_one_for_one :
+      clock:(unit -> int) -> intensity:intensity -> child list ->
+      (unit, error) result
+  end
 end
 ```
 
@@ -210,6 +239,38 @@ defaults to 65,536. Registration checks the quota before allocation, returns
 quota failure. `Actor.stats` exposes the live and peak monitor counts, quota
 failures, and configured limit. Consuming a ready exit, rolling back a token
 allocation, or retiring a watcher releases one live record exactly once.
+
+Layer 14 adds `spawn_monitored` as a single prepare/commit transaction. The
+child heap, stack, PID, and scheduler-owned monitor are prepared before either
+the child or monitor is published. Actor, closure-copy, heap, result-allocation,
+or monitor-quota failure aborts the complete transaction. The operation reuses
+the existing `caml_actor_spawn/1` primitive through a tagged request and does
+not create a bootstrap-visible primitive name.
+
+`await_any_exit` is an exit-only monitor wait set over an immutable list. It
+validates every token and rejects empty, duplicate, forged, foreign, or
+consumed sets before blocking or consuming anything. If multiple exits are
+ready, list order chooses the returned index deterministically. Only that
+monitor is consumed. The scheduler retains no pointer to the list, and exit
+waiting neither reads nor reorders the typed FIFO mailbox.
+
+`Actor.Supervisor.run_one_for_one` is ordinary OCaml code intended for the root
+actor. It starts children in declaration order, owns every child monitor, and
+restarts only the child whose exit was selected. `Permanent` always restarts,
+`Transient` restarts exception, heap-limit, mailbox-limit, unsupported, and
+runtime failures, and `Temporary` never restarts. `Normal` and `Cancelled` are
+not transient failures. Every replacement is an atomic monitored spawn with a
+new PID generation.
+
+Restart history is bounded by `max_restarts` in the inclusive `within` window.
+The caller supplies a nonnegative monotonic integer clock; this keeps Layer 14
+independent from scheduler timers and makes tests deterministic. A backwards
+clock, exhausted attempt counter, restart-intensity breach, or failed start or
+restart is terminal. Remaining children are cancelled and awaited in reverse
+declaration order so their monitors are drained before the supervisor returns.
+Callbacks execute in the supervisor actor; an uncaught callback exception
+therefore follows root-failure teardown. Nested cascade semantics, links, trap
+exits, selective receive, and real time remain out of scope.
 
 ## Execution semantics
 
