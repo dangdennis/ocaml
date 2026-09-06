@@ -22,6 +22,10 @@ external allocating_primitive : int -> int
 external exact_reductions : unit -> unit
   = "caml_actor_test_exact_reductions"
 
+external raise_primitive : exn -> 'a = "caml_actor_test_raise_primitive"
+external callback_primitive : (unit -> 'a) -> 'a
+  = "caml_actor_test_callback_primitive"
+
 exception Marker of int
 exception Uncaught of int
 exception Deep_uncaught
@@ -134,6 +138,35 @@ let check_stack_growth () =
   assert (stops > 0);
   assert stack_grew
 
+let check_c_exceptions_and_callbacks () =
+  let c_caught () =
+    try raise_primitive (Marker 73) with Marker n -> n + 1
+  in
+  let callback_caught () =
+    try callback_primitive (fun () -> raise_primitive (Marker 91))
+    with Marker n -> n + 1
+  in
+  let callback_value () = callback_primitive with_primitive in
+  List.iter (fun work ->
+    let expected = value (run_uninterrupted work) in
+    List.iter (fun budget ->
+      let observed, _, _, entries, exits, _ = run_sliced budget work in
+      assert (value observed = expected);
+      assert (entries = exits)) [1; 7])
+    [c_caught; callback_caught; callback_value];
+  List.iter (fun work ->
+    let observed, _, _, entries, exits, _ = run_sliced 1 work in
+    (match observed with
+     | Error (Uncaught 42, trace) ->
+         assert (Printexc.raw_backtrace_length trace > 0)
+     | _ -> assert false);
+    assert (entries = exits))
+    [(fun () -> raise_primitive (Uncaught 42));
+     (fun () -> callback_primitive (fun () -> raise (Uncaught 42)))];
+  (* A completed exceptional slice must not poison the next invocation. *)
+  let observed, _, _, _, _, _ = run_sliced 1 (fun () -> 123) in
+  assert (value observed = 123)
+
 let () =
   Printexc.record_backtrace true;
   exact_reductions ();
@@ -142,4 +175,5 @@ let () =
   check_uncaught_exception ();
   check_c_primitive_boundary ();
   check_stack_growth ();
+  check_c_exceptions_and_callbacks ();
   print_endline "resumable bytecode: ok"

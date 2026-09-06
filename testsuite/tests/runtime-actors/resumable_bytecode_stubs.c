@@ -93,6 +93,27 @@ CAMLprim value caml_actor_test_run_uninterrupted(value closure)
   CAMLreturn(result);
 }
 
+CAMLprim value caml_actor_test_raise_primitive(value exn)
+{
+  CAMLparam1(exn);
+  caml_gc_minor(Val_unit);
+  caml_raise(exn);
+}
+
+CAMLprim value caml_actor_test_callback_primitive(value closure)
+{
+  CAMLparam1(closure);
+  CAMLlocal1(result);
+
+  primitive_depth++;
+  primitive_entries++;
+  result = caml_callback_exn(closure, Val_unit);
+  primitive_exits++;
+  primitive_depth--;
+  if (Is_exception_result(result)) caml_raise(Extract_exception(result));
+  CAMLreturn(result);
+}
+
 CAMLprim value caml_actor_test_exact_reductions(value unit)
 {
   CAMLparam1(unit);
@@ -151,6 +172,36 @@ CAMLprim value caml_actor_test_exact_reductions(value unit)
       || domain_state->external_raise != raise_before
       || domain_state->trap_sp_off != trap_before) {
     caml_fatal_error("invalid terminal bytecode reduction state");
+  }
+
+  /* Initialization must leave room for the six-word pending-action frame,
+     not just the four-word suspended frame. Fill unused stack words with
+     valid immediates so that the synthetic deep stack is safe to scan. */
+  {
+    intnat caller_depth = Stack_high(domain_state->current_stack)
+      - domain_state->current_stack->sp;
+    value *entry = Stack_base(domain_state->current_stack) + 4;
+    for (value *p = entry; p < domain_state->current_stack->sp; p++)
+      *p = Val_unit;
+    domain_state->current_stack->sp = entry;
+    caml_bytecode_state_init(
+      &state, exact_reduction_code, sizeof(exact_reduction_code), Val_unit, 0);
+    if (domain_state->current_stack->sp + 4
+        - Stack_base(domain_state->current_stack) < 6) {
+      caml_fatal_error("slice initialization lacks pending-action headroom");
+    }
+    caml_set_action_pending(domain_state);
+    reason = caml_bytecode_interpreter_slice(&state, 0, &result);
+    if (reason != CAML_BYTECODE_STOP_REDUCTIONS
+        || domain_state->action_pending) {
+      caml_fatal_error("tight-stack slice did not drain pending actions");
+    }
+    reason = caml_bytecode_interpreter_slice(
+      &state, CAML_BYTECODE_REDUCTIONS_UNLIMITED, &result);
+    if (reason != CAML_BYTECODE_STOP_VALUE || result != Val_int(1))
+      caml_fatal_error("tight-stack slice did not finish");
+    domain_state->current_stack->sp =
+      Stack_high(domain_state->current_stack) - caller_depth;
   }
 
   CAMLreturn(Val_unit);
