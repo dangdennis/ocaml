@@ -1,14 +1,17 @@
 # Heap-isolated actors: MVP contract
 
 This document is the normative contract for the experimental actor runtime.
-The implementation is intentionally staged. The `Actor` module is unavailable
-through PR 3, and no branch before PR 6 may claim heap isolation.
+PR #1 defines requirements and test support; it implements no actor runtime.
+The `Actor` module remains unavailable through PR #6. Public actor entry starts
+in PR #7, and independent collection in PR #9 gates the heap-isolation claim.
+All PR numbers below refer to actual GitHub pull requests.
 
 ## Scope
 
-The MVP supports Linux x86-64, bytecode, one OS thread, and one runtime-owned
-scheduler. It provides private actor heaps, FIFO mailboxes, reduction-based
-preemption, and actor-local failure. It is not a security sandbox.
+The planned MVP targets Linux x86-64, bytecode, one OS thread, and one
+runtime-owned scheduler. It must provide private actor heaps, FIFO mailboxes,
+reduction-based preemption, and actor-local failure. It is not a security
+sandbox. These are requirements for subsequent PRs, not capabilities of PR #1.
 
 Native code, multiple Domains, selective receive, links, monitors, timers,
 blocking I/O, distribution, arbitrary C stubs, effects, and finalizers are out
@@ -17,7 +20,8 @@ runtime state.
 
 ## API
 
-The public surface introduced by PR 4 has this shape:
+The planned public surface has this shape. PR #7 introduces actor entry,
+spawn, self, and yield; PR #8 adds send and receive:
 
 ```ocaml
 module Actor : sig
@@ -50,12 +54,14 @@ module Actor : sig
 end
 ```
 
-These constructors are part of the PR 0 contract. Adding an error case later
+These constructors are part of the PR #1 contract. Adding an error case later
 is an API change and requires a contract revision. Error strings are copied to
 the host only after they have a pointer-free representation; actor heap values
 never escape through an error.
 
 ## Execution semantics
+
+The future runtime must satisfy the following requirements.
 
 - `Actor.run` suspends the host bytecode computation and starts actor 0.
 - The host heap is frozen while actor mode runs. Actors may read approved
@@ -86,7 +92,8 @@ or envelope becomes visible.
 
 ## Isolation invariants
 
-Debug builds verify these rules at every mandatory checkpoint:
+Future runtime implementations must verify these rules in debug builds at
+every mandatory checkpoint:
 
 1. Every private heap block has exactly one live actor owner.
 2. A private heap edge targets the same actor or approved frozen state.
@@ -154,7 +161,10 @@ or allocation path raises an actor-mode unsupported-operation error.
 
 Actor tests use a fixed seed unless `ACTOR_SEED` supplies a decimal or `0x`
 integer. They use the repository-local PRNG in `actor_test_harness.ml`, never a
-self-initialized random source.
+self-initialized random source. Bounded choices use the high bits of the
+fixed generator and rejection sampling; the low bits have short periods.
+The same seed and calls reproduce the same choices. This generator is for
+tests and is not a cryptographic source.
 
 `ACTOR_TRACE`, when present, is a path to a replay trace. The canonical trace
 grammar is:
@@ -176,13 +186,16 @@ replay divergence, and an `ACTOR_SEED` plus `ACTOR_TRACE` command.
 
 ## Claim gates
 
-- PR 0 specifies this contract and makes the harness itself executable.
-- PR 1 proves resumable bytecode and safe reduction stops.
-- PR 2 proves disjoint allocation and mandatory owner verification.
-- PR 4 proves spawn copying, the freeze boundary, and safe-language closure.
-- PR 6 proves independent private collection. Only then is `heap-isolated` an
+- PR #1 specifies this contract and makes the harness itself executable.
+- PR #2 proves resumable bytecode and safe reduction stops.
+- PR #4 proves disjoint allocation and mandatory owner verification.
+- PR #5 proves deterministic scheduling and stale-PID rejection.
+- PR #6 establishes the runtime safety fence.
+- PR #7 proves transactional actor entry and spawn copying.
+- PR #8 proves pointer-free FIFO messaging.
+- PR #9 proves independent private collection. Only then is `heap-isolated` an
   accurate implementation claim.
-- PR 7 proves failure containment, deterministic cleanup, and stress replay.
+- PR #10 proves failure containment, deterministic cleanup, and stress replay.
 
 ## Acceptance cases
 
@@ -190,18 +203,19 @@ Each case becomes an executable test in the PR named below. Keeping future
 cases here, rather than as skipped tests, prevents uncompiled tests from
 creating a false-green signal.
 
-- PR 1: uninterrupted versus many-stop results, exceptions, and backtraces;
+- PR #2: uninterrupted versus many-stop results, exceptions, and backtraces;
   stop only at opcode boundaries and after primitives have returned.
-- PR 2: alternating contexts allocate in disjoint ranges; stock-major
+- PR #4: alternating contexts allocate in disjoint ranges; stock-major
   allocation and an injected foreign edge are rejected.
-- PR 3: two CPU-bound actors both progress; stale PIDs never revive.
-- PR 4: captured refs diverge after spawn; frozen global mutation and unsafe
-  primitives fail closed.
-- PR 5: FIFO wakeup, sender/receiver mutation independence, cycle and alias
+- PR #5: two CPU-bound actors both progress; stale PIDs never revive.
+- PR #6: frozen global mutation and unsafe primitives fail closed.
+- PR #7: captured refs diverge after spawn; actor entry and copied captures
+  preserve the freeze boundary and safe-language closure.
+- PR #8: FIFO wakeup, sender/receiver mutation independence, cycle and alias
   preservation, and transactional rejection of unsupported messages.
-- PR 6: repeated moving GC in actor A neither scans nor changes actor B; all
+- PR #9: repeated moving GC in actor A neither scans nor changes actor B; all
   saved roots survive movement; whole-heap exit reclamation is complete.
-- PR 7: child exception and quota exhaustion leave peers alive; root failure
+- PR #10: child exception and quota exhaustion leave peers alive; root failure
   shuts down cleanly; deadlock, fault injection, and seeded replay agree with
   the reference model.
 
