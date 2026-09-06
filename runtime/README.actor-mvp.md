@@ -240,6 +240,81 @@ quota failure. `Actor.stats` exposes the live and peak monitor counts, quota
 failures, and configured limit. Consuming a ready exit, rolling back a token
 allocation, or retiring a watcher releases one live record exactly once.
 
+## Layer 15 monotonic timers
+
+`Actor.Timer.after seconds` registers an owned one-shot timer measured from
+registration. `await` suspends only its owner and consumes the timer at expiry.
+`cancel` consumes it immediately, returning true before expiry and false at or
+after expiry. Both operations reject foreign, stale, consumed, or cross-world
+identities with `Invalid_timer`. Tokens are abstract immediates, not transferable
+ownership capabilities. Actor cancellation removes all timers it still owns.
+
+Durations are finite nonnegative seconds, rounded upward from the exact binary64
+input to integer nanoseconds. Negative zero is zero. Negative durations, NaN,
+infinities, and duration/deadline overflow return `Invalid_duration` without
+publication. `sleep` registers and awaits one timer, except that `sleep 0.`
+yields once without using the timer quota. `after 0.` creates a ready timer
+which remains charged until consumed or cancelled. Sleep and await return
+results so resource rejection is recoverable. Timers may run late; this is not
+a real-time scheduling guarantee.
+
+The scheduler owns a bounded timer table and a min-heap ordered by deadline and
+registration identity. Queue removal is immediate; cancellation does not leave
+lazy tombstones. Table storage grows geometrically on demand. Identity lookup
+and owner cleanup currently scan allocated table capacity; insertion/expiry
+heap repair is logarithmic. Identities monotonically increase across the
+single-Domain actor worlds and fail before wrapping. C records contain only
+scalar identities, deadlines, and indices. No timer retains an OCaml value.
+
+`max_timers` defaults to 65,536 and includes ready but unconsumed timers. The
+new world-config field must be supplied by callers constructing a full record;
+record updates from `default_world_config` inherit it. Existing numeric defaults
+and legacy run-request encodings retain their behavior. Timer result blocks
+are allocated before successful registration or consumption. Allocation/quota
+failure publishes no partial timer. Timer metadata allocation failure reports
+`Timer_unavailable`; actor result allocation failure retains heap containment.
+
+`Actor.stats` reports `timers`, `peak_timers`, `pending_timers`, `ready_timers`,
+`timers_expired`, `timers_cancelled`, `timer_quota_failures`, and `timer_limit`.
+Pending/ready gauges describe scheduler promotion, not an independent clock
+sample. Expirations include directly consumed due timers. Cancellation totals
+also include records discarded on owner teardown. Counters saturate at
+`max_int`. Trace schema v2 adds scalar timer lifecycle/cleanup events and the
+configured limit; the viewer still reads schema v1. Tracing reads no additional
+clock samples and does not affect timer state transitions.
+
+Mailbox, monitor, and timer waits have distinct internal wait reasons. Mail and
+exit notifications remain ready without waking an unrelated timer wait. The
+existing retryable C_CALL1 boundary preserves the timer request, so resumption
+never rearms it. Actor cancellation takes priority over timer promotion.
+Each scheduler boundary promotes at most 64 due timers in stable order and
+appends matching waiters to the ordinary FIFO ready queue, including while CPU
+actors remain runnable. Timer messages, callbacks, periodic timers, selective
+receive, and public general wait sets are not provided.
+
+When the world is idle, a future timer actually awaited by a live blocked actor
+prevents deadlock. Unawaited or unconsumed ready timers do not keep a deadlocked
+world alive. The scheduler uses the earliest awaited deadline and returns to
+its host loop after each wait. Linux uses CLOCK_MONOTONIC and absolute-deadline
+clock_nanosleep; system suspend is excluded. No actor primitive sleeps the
+scheduler thread. The internal host backend supplies clock and wait operations
+and can later incorporate socket readiness. Native actor execution remains
+unsupported, and no unaudited wall-clock fallback is supplied.
+
+Interrupted or early waits retain their deadline and resample monotonic time.
+After 64 consecutive incomplete waits the world fails with a bounded diagnostic
+rather than spin indefinitely. Pending host actions remain subject to the
+existing frozen-world fence; waiting never runs an arbitrary OCaml callback.
+A failing/backward clock or fatal wait error returns `Root_failed` and retires
+all world resources. Owner retirement and every world exit remove timer records
+before heap destruction or PID reuse. The supervisor's explicit integer clock
+and restart-window units remain unchanged.
+
+Tests install a host-only fake backend for exact deadlines, time advancement,
+interruption, error, and backward-clock injection. The backend cannot be changed
+by an actor primitive. Determinism means identical supplied clock/event inputs;
+real-time runs need not produce identical scheduling or traces.
+
 Layer 14 adds `spawn_monitored` as a single prepare/commit transaction. The
 child heap, stack, PID, and scheduler-owned monitor are prepared before either
 the child or monitor is published. Actor, closure-copy, heap, result-allocation,
