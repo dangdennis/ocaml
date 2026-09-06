@@ -21,3 +21,8 @@ overhead for the same integer workload; ping-pong and graph-copy operations
 are labeled as round trips. Run several samples on the same idle machine and
 retain the raw output when comparing commits. `ACTOR_BENCH_SCALE` multiplies
 every workload.
+
+`timer_bench.ml` measures bounded registration/cancellation and checks that all
+charges are released. Compile it in the same way as `actor_bench.ml` and set
+`ACTOR_TIMER_BENCH_COUNT` (default 2,000; range 1 through 65,536). CI uses 256.
+It reports host CPU seconds and imposes no shared-runner performance threshold.

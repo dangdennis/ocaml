@@ -53,14 +53,17 @@ CAMLextern uint64_t caml_actor_timer_deadline(
 CAMLextern void caml_actor_timer_consume(
   struct caml_actor_timers *, uintnat owner, uintnat id, int cancelled);
 /* Expire up to budget timers; callback contains scalar identities only. */
-CAMLextern int caml_actor_timers_poll(struct caml_actor_timers *, uintnat budget,
+CAMLextern int caml_actor_timers_poll(
+  struct caml_actor_timers *, uintnat budget,
   void (*ready)(void *, uintnat, uintnat, uint64_t), void *context);
 CAMLextern int caml_actor_timers_wait(struct caml_actor_timers *, uint64_t);
 CAMLextern void caml_actor_timers_retire(struct caml_actor_timers *, uintnat);
 CAMLextern void caml_actor_timers_stats(const struct caml_actor_timers *,
                                      struct caml_actor_timer_stats *);
 /* Host-only test seams, never admitted as actor primitives. */
-CAMLextern void caml_actor_timers_test_fail_allocation(struct caml_actor_timers *);
-CAMLextern void caml_actor_timers_test_exhaust_identity(struct caml_actor_timers *);
+CAMLextern void caml_actor_timers_test_fail_allocation(
+  struct caml_actor_timers *);
+CAMLextern void caml_actor_timers_test_exhaust_identity(
+  struct caml_actor_timers *);
 #endif
 #endif

@@ -327,7 +327,7 @@ static value actor_run(value root,
                        mlsize_t message_quota_words,
                        uintnat mailbox_message_limit,
                        uintnat mailbox_byte_limit,
-                       uintnat monitor_limit)
+                       uintnat monitor_limit, uintnat timer_limit)
 {
   CAMLparam1(root);
   CAMLlocal3(result, error, message_value);
@@ -370,6 +370,11 @@ static value actor_run(value root,
     message_quota_words, mailbox_message_limit, mailbox_byte_limit,
     monitor_limit);
   if (scheduler == NULL) goto cleanup;
+  if (!caml_actor_scheduler_configure_timers(scheduler, timer_limit)) {
+    outcome = ACTOR_RUN_ROOT_FAILED;
+    message = "timer configuration unavailable";
+    goto cleanup;
+  }
   caml_actor_scheduler_trace_enable_from_environment(scheduler);
 
   spawn_status = caml_actor_scheduler_prepare_root_closure_sized(
@@ -405,6 +410,17 @@ static value actor_run(value root,
         || step.reason == CAML_ACTOR_STEP_YIELD
         || step.reason == CAML_ACTOR_STEP_BLOCKED) {
       continue;
+    }
+    if (step.reason == CAML_ACTOR_STEP_WAIT) {
+      if (caml_actor_scheduler_wait(scheduler) >= 0) continue;
+      outcome = ACTOR_RUN_ROOT_FAILED;
+      message = "actor timer wait failed or host action pending";
+      break;
+    }
+    if (step.reason == CAML_ACTOR_STEP_RUNTIME_FAILURE) {
+      outcome = ACTOR_RUN_ROOT_FAILED;
+      message = "actor monotonic timer clock failed";
+      break;
     }
     if (step.reason == CAML_ACTOR_STEP_IDLE) {
       outcome = ACTOR_RUN_DEADLOCK;
@@ -451,6 +467,7 @@ static value actor_run(value root,
 cleanup:
   if (prepared != NULL) caml_actor_scheduler_abort_prepared(prepared);
   if (scheduler != NULL) {
+    caml_actor_scheduler_cleanup_timers(scheduler);
     caml_actor_scheduler_trace_finish(
       scheduler, actor_run_outcome_name(outcome));
     caml_actor_scheduler_destroy(scheduler);
@@ -501,6 +518,7 @@ CAMLprim value caml_actor_run(value root)
   uintnat mailbox_message_limit = ACTOR_MVP_MAILBOX_MESSAGES;
   uintnat mailbox_byte_limit = ACTOR_MVP_MAILBOX_BYTES;
   uintnat monitor_limit = ACTOR_MVP_MONITORS;
+  uintnat timer_limit = CAML_ACTOR_DEFAULT_TIMERS;
 
   entry = root;
   if (Is_block(root) && Tag_val(root) == 0 && Wosize_val(root) == 1) {
@@ -526,7 +544,8 @@ CAMLprim value caml_actor_run(value root)
     child_maximum = Long_val(child_maximum_value);
     entry = Field(root, 4);
   } else if (Is_block(root)
-             && Tag_val(root) == 0 && Wosize_val(root) == 11) {
+             && Tag_val(root) == 0
+             && (Wosize_val(root) == 11 || Wosize_val(root) == 12)) {
     value root_initial_value = Field(root, 0);
     value root_maximum_value = Field(root, 1);
     value child_initial_value = Field(root, 2);
@@ -570,12 +589,20 @@ CAMLprim value caml_actor_run(value root)
     mailbox_message_limit = Long_val(mailbox_message_limit_value);
     mailbox_byte_limit = Long_val(mailbox_byte_limit_value);
     monitor_limit = Long_val(monitor_limit_value);
-    entry = Field(root, 10);
+    if (Wosize_val(root) == 12) {
+      value timer_limit_value = Field(root, 10);
+      if (!Is_long(timer_limit_value) || Long_val(timer_limit_value) <= 0
+          || (uintnat)Long_val(timer_limit_value) > SIZE_MAX / 64) {
+        caml_invalid_argument("Actor.run_with_config max_timers");
+      }
+      timer_limit = Long_val(timer_limit_value);
+    }
+    entry = Field(root, Wosize_val(root) - 1);
   }
   CAMLreturn(actor_run(
     entry, root_initial, root_maximum, child_initial, child_maximum,
     actor_capacity, reduction_budget, message_quota_words,
-    mailbox_message_limit, mailbox_byte_limit, monitor_limit));
+    mailbox_message_limit, mailbox_byte_limit, monitor_limit, timer_limit));
 }
 
 static value actor_spawn(value closure, mlsize_t initial_heap_words,
@@ -754,6 +781,105 @@ static value actor_cancel(value target_value)
 #endif
 }
 
+#if !defined(NATIVE_CODE)
+/* All public timer results have one field. Allocate before consuming or
+   publishing scheduler state; no actor allocation follows a successful
+   commit. */
+static value actor_timer_result(value result,
+                                enum caml_actor_timer_status status,
+                                value payload)
+{
+  int error;
+  if (status == CAML_ACTOR_TIMER_OK) {
+    Field(result, 0) = payload;
+    return result;
+  }
+  switch (status) {
+  case CAML_ACTOR_TIMER_DURATION: error = 0; break;
+  case CAML_ACTOR_TIMER_LIMIT: error = 1; break;
+  case CAML_ACTOR_TIMER_UNAVAILABLE: error = 2; break;
+  case CAML_ACTOR_TIMER_INVALID: error = 3; break;
+  case CAML_ACTOR_TIMER_UNSUPPORTED: error = 4; break;
+  default:
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  /* Heap metadata fixes the block tag at allocation. Error paths have
+     committed no resource, so allocate a correctly tagged Error separately. */
+  result = actor_alloc_one(1, Val_int(error));
+  return result == 0 ? Val_unit : result;
+}
+static value actor_timer_after(value duration)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  struct caml_actor_scheduler *scheduler = Caml_state->actor_scheduler;
+  const value *payload;
+  header_t header;
+  double seconds;
+  uintnat id = 0;
+  value result;
+  enum caml_actor_timer_status status;
+  if (caml_actor_heap_owns_value(heap, duration)
+      && Tag_val(duration) == Double_tag
+      && Wosize_val(duration) == Double_wosize) {
+    seconds = Double_val(duration);
+  } else if (caml_actor_world_frozen_snapshot(duration, &header, &payload)
+             && Tag_hd(header) == Double_tag
+             && Wosize_hd(header) == Double_wosize) {
+    memcpy(&seconds, payload, sizeof(seconds));
+  } else {
+    caml_actor_scheduler_request_unsupported();
+    return Val_unit;
+  }
+  result = actor_alloc_one(0, Val_unit);
+  if (result == 0) return Val_unit;
+  status = caml_actor_scheduler_timer_after(scheduler, seconds, &id);
+  return actor_timer_result(result, status, Val_long(id));
+}
+static value actor_timer_cancel(value token)
+{
+  struct caml_actor_scheduler *scheduler = Caml_state->actor_scheduler;
+  enum caml_actor_timer_status status;
+  value result;
+  if (!Is_long(token)) {
+    caml_actor_scheduler_request_unsupported(); return Val_unit;
+  }
+  result = actor_alloc_one(0, Val_unit);
+  if (result == 0) return Val_unit;
+  status = caml_actor_scheduler_timer_peek(scheduler, Long_val(token));
+  if (status == CAML_ACTOR_TIMER_OK || status == CAML_ACTOR_TIMER_PENDING) {
+    caml_actor_scheduler_timer_consume(scheduler, Long_val(token),
+                                       status == CAML_ACTOR_TIMER_PENDING);
+    return actor_timer_result(result, CAML_ACTOR_TIMER_OK,
+                             Val_bool(status == CAML_ACTOR_TIMER_PENDING));
+  }
+  return actor_timer_result(result, status, Val_unit);
+}
+static value actor_timer_await(value request, value token)
+{
+  struct caml_actor_scheduler *scheduler = Caml_state->actor_scheduler;
+  enum caml_actor_timer_status status;
+  uintnat id;
+  value result;
+  if (!Is_long(token)) {
+    caml_actor_scheduler_request_unsupported(); return Val_unit;
+  }
+  id = Long_val(token);
+  status = caml_actor_scheduler_timer_peek(scheduler, id);
+  if (status == CAML_ACTOR_TIMER_PENDING) {
+    if (!caml_actor_scheduler_timer_block(scheduler, id)) {
+      caml_actor_scheduler_request_unsupported(); return Val_unit;
+    }
+    return request;
+  }
+  result = actor_alloc_one(0, Val_unit);
+  if (result == 0) return Val_unit;
+  if (status == CAML_ACTOR_TIMER_OK)
+    caml_actor_scheduler_timer_consume(scheduler, id, 0);
+  return actor_timer_result(result, status, Val_unit);
+}
+#endif
+
 CAMLprim value caml_actor_spawn(value request)
 {
 #if defined(NATIVE_CODE)
@@ -805,6 +931,8 @@ CAMLprim value caml_actor_spawn(value request)
     if (Long_val(operation) == 0) return actor_monitor(closure);
     if (Long_val(operation) == 1) return actor_cancel(closure);
     if (Long_val(operation) == 2) return actor_spawn_monitored(closure);
+    if (Long_val(operation) == 3) return actor_timer_after(closure);
+    if (Long_val(operation) == 4) return actor_timer_cancel(closure);
     caml_actor_scheduler_request_unsupported();
     return Val_unit;
   } else if (caml_actor_heap_owns_value(heap, request)
@@ -872,7 +1000,7 @@ CAMLprim value caml_actor_stats(value unit)
   if (!caml_actor_scheduler_stats(Caml_state->actor_scheduler, &stats)) {
     caml_invalid_argument("Actor.stats outside an actor world");
   }
-  record = actor_try_alloc(26, 0);
+  record = actor_try_alloc(34, 0);
   if (record == 0) return Val_unit;
 #define Store_stat(field, value) \
   Field(record, (field)) = Val_long( \
@@ -903,6 +1031,14 @@ CAMLprim value caml_actor_stats(value unit)
   Store_stat(23, stats.peak_monitors);
   Store_stat(24, stats.monitor_quota_failures);
   Store_stat(25, stats.monitor_limit);
+  Store_stat(26, stats.timers.count);
+  Store_stat(27, stats.timers.peak);
+  Store_stat(28, stats.timers.pending);
+  Store_stat(29, stats.timers.count - stats.timers.pending);
+  Store_stat(30, stats.timers.expired);
+  Store_stat(31, stats.timers.cancelled);
+  Store_stat(32, stats.timers.quota_failures);
+  Store_stat(33, stats.timers.limit);
 #undef Store_stat
   return record;
 #else
@@ -1096,7 +1232,7 @@ static value actor_await_exit(value monitor)
   monitor_id = Long_val(id_value);
   status = caml_actor_scheduler_peek_exit(scheduler, monitor_id, &reason);
   if (status == CAML_ACTOR_MONITOR_PENDING) {
-    if (!caml_actor_scheduler_request_blocked()) {
+    if (!caml_actor_scheduler_request_monitor_blocked()) {
       caml_actor_scheduler_request_unsupported();
       return Val_unit;
     }
@@ -1199,7 +1335,7 @@ static value actor_await_any_exit(value request)
     selected_id = 0;
   }
   if (selected_id == 0) {
-    if (!caml_actor_scheduler_request_blocked()) {
+    if (!caml_actor_scheduler_request_monitor_blocked()) {
       caml_actor_scheduler_request_unsupported();
       return Val_unit;
     }
@@ -1258,8 +1394,15 @@ CAMLprim value caml_actor_receive(value inbox)
     if (caml_actor_heap_owns_value(caml_actor_heap_current(), inbox)
         && Tag_val(inbox) == 0 && Wosize_val(inbox) == 2
         && caml_actor_heap_read_field(inbox, 0, &operation)
-        && Is_long(operation) && Long_val(operation) == 1) {
-      return actor_await_any_exit(inbox);
+        && Is_long(operation)) {
+      if (Long_val(operation) == 1) return actor_await_any_exit(inbox);
+      if (Long_val(operation) == 2) {
+        value token;
+        if (!caml_actor_heap_read_field(inbox, 1, &token)) {
+          caml_actor_scheduler_request_unsupported(); return Val_unit;
+        }
+        return actor_timer_await(inbox, token);
+      }
     }
     return actor_await_exit(inbox);
   }

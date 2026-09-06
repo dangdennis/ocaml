@@ -43,7 +43,8 @@
    ; matches the line structure of files in Makefile/BYTECODE_C_SOURCES
    interp.c misc.c fix_code.c startup_aux.c startup_byt.c freelist.c
      major_gc.c
-   minor_gc.c memory.c actor.c actor_copy.c actor_heap.c actor_scheduler.c actor_timer.c
+   minor_gc.c memory.c actor.c actor_copy.c actor_heap.c actor_scheduler.c
+     actor_timer.c
      actor_primitive_policy.def actor_wire.c actor_world.c alloc.c
      roots_byt.c
      globroots.c fail_byt.c

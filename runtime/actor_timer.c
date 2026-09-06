@@ -180,11 +180,12 @@ static int grow(struct caml_actor_timers *t)
 }
 /* Compute ceil(seconds * 10^9) exactly for the binary64 input. Multiplying
    doubles first can round DOWN by many nanoseconds at large durations. Split
-   the 53-bit significand product into two 64-bit limbs (also portable to MSVC). */
+   the 53-bit significand product into two 64-bit limbs, portable to MSVC. */
 static int duration_ticks(double seconds, uint64_t *duration)
 {
   int exponent, shift;
-  uint64_t significand, low_product, high_product, low, high, ticks, remainder;
+  uint64_t significand, low_product, high_product, low, high;
+  uint64_t ticks, remainder;
   if (!isfinite(seconds) || seconds < 0.) return 0;
   if (seconds == 0.) { *duration = 0; return 1; }
   significand = (uint64_t)ldexp(frexp(seconds, &exponent), 53);

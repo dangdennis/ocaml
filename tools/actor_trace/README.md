@@ -32,4 +32,4 @@ completed replay, and marks traces with dropped events as incomplete.
 It defaults to 4096 and accepts values from 1 through 1,000,000. The buffer is
 drained only when the scheduler has returned to host context.
 
-See [schema-v1.md](schema-v1.md) for the event contract and privacy boundary.
+See [schema-v2.md](schema-v2.md) for the event contract and privacy boundary.
