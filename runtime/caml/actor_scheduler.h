@@ -20,6 +20,7 @@
 #ifdef CAML_INTERNALS
 
 #include "mlvalues.h"
+#include "actor_timer.h"
 
 struct caml_actor_scheduler;
 struct caml_actor_prepared_spawn;
@@ -75,6 +76,8 @@ struct caml_actor_unsupported {
 
 enum caml_actor_step_reason {
   CAML_ACTOR_STEP_IDLE = 0,
+  CAML_ACTOR_STEP_WAIT,
+  CAML_ACTOR_STEP_RUNTIME_FAILURE,
   CAML_ACTOR_STEP_REDUCTIONS,
   CAML_ACTOR_STEP_YIELD,
   CAML_ACTOR_STEP_BLOCKED,
@@ -187,6 +190,7 @@ struct caml_actor_scheduler_stats {
   uintnat peak_monitors;
   uintnat monitor_quota_failures;
   uintnat monitor_limit;
+  struct caml_actor_timer_stats timers;
 };
 
 CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create(
@@ -196,6 +200,22 @@ CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words,
   mlsize_t message_quota_words, uintnat mailbox_message_limit,
   uintnat mailbox_byte_limit, uintnat monitor_limit);
+CAMLextern int caml_actor_scheduler_configure_timers(
+  struct caml_actor_scheduler *, uintnat);
+CAMLextern enum caml_actor_timer_status caml_actor_scheduler_timer_after(
+  struct caml_actor_scheduler *, double, uintnat *);
+CAMLextern enum caml_actor_timer_status caml_actor_scheduler_timer_peek(
+  struct caml_actor_scheduler *, uintnat);
+CAMLextern void caml_actor_scheduler_timer_consume(
+  struct caml_actor_scheduler *, uintnat, int);
+CAMLextern int caml_actor_scheduler_timer_block(
+  struct caml_actor_scheduler *, uintnat);
+CAMLextern void caml_actor_scheduler_cleanup_timers(
+  struct caml_actor_scheduler *);
+CAMLextern int caml_actor_scheduler_wait(struct caml_actor_scheduler *);
+CAMLextern int caml_actor_scheduler_request_monitor_blocked(void);
+CAMLextern void caml_actor_scheduler_test_timer_backend(
+  const struct caml_actor_timer_backend *);
 CAMLextern void caml_actor_scheduler_destroy(
   struct caml_actor_scheduler *scheduler);
 CAMLextern void caml_actor_scheduler_trace_enable_from_environment(

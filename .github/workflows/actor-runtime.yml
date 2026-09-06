@@ -65,6 +65,11 @@ jobs:
             -o "$bench_dir/actor_bench.byte" "$bench_dir/actor_bench.ml"
           ACTOR_BENCH_SCALE=1 \
             ./runtime/ocamlrun "$bench_dir/actor_bench.byte"
+          cp testsuite/benchmarks/runtime-actors/timer_bench.ml "$bench_dir/"
+          ./runtime/ocamlrun ./ocamlc -I stdlib \
+            -o "$bench_dir/timer_bench.byte" "$bench_dir/timer_bench.ml"
+          ACTOR_TIMER_BENCH_COUNT=256 \
+            ./runtime/ocamlrun "$bench_dir/timer_bench.byte"
 
   sanitizer:
     name: ${{ matrix.name }} actor tests

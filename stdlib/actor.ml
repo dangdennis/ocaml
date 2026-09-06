@@ -57,6 +57,7 @@ type world_config = {
   max_mailbox_messages : int;
   max_mailbox_bytes : int;
   max_monitors : int;
+  max_timers : int;
 }
 
 let default_world_config = {
@@ -68,6 +69,7 @@ let default_world_config = {
   max_mailbox_messages = 1 lsl 16;
   max_mailbox_bytes = 1 lsl 28;
   max_monitors = 1 lsl 16;
+  max_timers = 1 lsl 16;
 }
 
 type run_error =
@@ -117,6 +119,14 @@ type stats = {
   peak_monitors : int;
   monitor_quota_failures : int;
   monitor_limit : int;
+  timers : int;
+  peak_timers : int;
+  pending_timers : int;
+  ready_timers : int;
+  timers_expired : int;
+  timers_cancelled : int;
+  timer_quota_failures : int;
+  timer_limit : int;
 }
 
 type run_request =
@@ -134,7 +144,7 @@ let run_with_heap_limits ~root ~child entry =
      child.initial_words, child.maximum_words, entry)
 
 type configured_run_request =
-  int * int * int * int * int * int * int * int * int * int *
+  int * int * int * int * int * int * int * int * int * int * int *
   (unit inbox -> unit)
 
 external configured_run_request : configured_run_request ->
@@ -147,7 +157,7 @@ let run_with_config config entry =
      config.child_heap.initial_words, config.child_heap.maximum_words,
      config.max_actors, config.reductions_per_slice,
      config.max_message_words, config.max_mailbox_messages,
-     config.max_mailbox_bytes, config.max_monitors, entry)
+     config.max_mailbox_bytes, config.max_monitors, config.max_timers, entry)
 
 type 'message spawn_request =
   int * int * ('message inbox -> unit)
@@ -214,6 +224,24 @@ external yield : unit -> unit
 
 external stats : unit -> stats
   = "caml_actor_stats"
+
+module Timer = struct
+  type t = int
+  type error = Invalid_duration | Timer_limit | Timer_unavailable
+             | Invalid_timer | Timer_unsupported
+  external after_request : int * float -> (t, error) result
+    = "caml_actor_spawn"
+  external cancel_request : int * t -> (bool, error) result
+    = "caml_actor_spawn"
+  external await_request : int * t -> (unit, error) result
+    = "caml_actor_receive"
+  let after seconds = after_request (3, seconds)
+  let cancel timer = cancel_request (4, timer)
+  let await timer = await_request (2, timer)
+  let sleep seconds =
+    if seconds = 0. then (yield (); Ok ())
+    else match after seconds with Error e -> Error e | Ok t -> await t
+end
 
 module Supervisor = struct
   type restart = Permanent | Transient | Temporary

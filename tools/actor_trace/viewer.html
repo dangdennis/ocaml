@@ -214,7 +214,7 @@
         return n;
       };
       function model() {
-        const actors = new Map(), messages = new Map();
+        const actors = new Map(), messages = new Map(), timers = new Map();
         let header = null, footer = null;
         for (const e of events.slice(0, index)) {
           if (e.event === "world_start") header = e;
@@ -230,6 +230,16 @@
           if (e.event === "state" && actors.has(e.actor)) {
             Object.assign(actors.get(e.actor), e);
           }
+          if (e.event === "timer") {
+            if (e.action === "created" || e.action === "expired") {
+              timers.set(e.timer, e);
+            } else timers.delete(e.timer);
+          }
+          if (e.event === "timer_cleanup") {
+            for (const [id, timer] of timers) {
+              if (timer.actor === e.actor) timers.delete(id);
+            }
+          }
           if (e.event === "send") messages.set(e.message, e);
           if (e.event === "receive" || e.event === "drop") {
             messages.delete(e.message);
@@ -244,6 +254,7 @@
         return {
           actors: [...actors.values()],
           messages: [...messages.values()],
+          timers: [...timers.values()],
           header,
           footer,
         };
@@ -363,10 +374,12 @@
             mailbox_bytes: picked.mailbox_bytes,
             growths: picked.growths,
             collections: picked.collections,
+            timers: m.timers.filter((t) => t.actor === picked.actor).length,
           }
           : {
             actors: m.actors.length,
             messages_in_flight: m.messages.length,
+            timers: m.timers.length,
             schema: m.header?.schema,
             outcome: m.footer?.outcome,
           };
@@ -406,7 +419,7 @@
                 }
               }),
             header = parsed.find((e) => e.event === "world_start");
-          if (header && header.schema !== 1) {
+          if (header && ![1, 2].includes(header.schema)) {
             schemaError = `Unsupported trace schema ${header.schema}`;
             events = [];
             index = 0;

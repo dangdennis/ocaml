@@ -73,13 +73,16 @@ type world_config = {
   max_mailbox_messages : int;
   max_mailbox_bytes : int;
   max_monitors : int;
+  max_timers : int;
 }
 (** Immutable actor-world limits. [max_actors] includes the root actor and must
     be between 2 and 65,536. Reduction and message limits must be positive.
     [max_message_words] bounds graph discovery and pointer-free serialization
     work for each send. [max_mailbox_messages] and [max_mailbox_bytes] bound
     the aggregate queued envelopes in the actor world. All limits must be
-    positive. [max_monitors] bounds scheduler-owned monitor records. *)
+    positive. [max_monitors] bounds scheduler-owned monitor records.
+    [max_timers] bounds pending and ready unconsumed timers and defaults to
+    65,536; timer storage is allocated on demand. *)
 
 val default_world_config : world_config
 
@@ -130,6 +133,14 @@ type stats = {
   peak_monitors : int;
   monitor_quota_failures : int;
   monitor_limit : int;
+  timers : int;
+  peak_timers : int;
+  pending_timers : int;
+  ready_timers : int;
+  timers_expired : int;
+  timers_cancelled : int;
+  timer_quota_failures : int;
+  timer_limit : int;
 }
 (** A deterministic snapshot of the current actor world's scheduler counts.
     [runnable_actors] includes the actor taking the snapshot.
@@ -140,7 +151,9 @@ type stats = {
     [monitors] includes pending and ready unconsumed monitor records.
     [peak_monitors], [monitor_quota_failures], and [monitor_limit] describe
     deterministic monitor-resource use. The remaining limit fields describe
-    the immutable actor world. Counters saturate at [max_int]. *)
+    the immutable actor world. Timer pending/ready gauges reflect scheduler
+    promotion; cancelled counts include owner cleanup. Consuming or cancelling
+    a timer releases its charge. Counters saturate at [max_int]. *)
 
 external run : (unit inbox -> unit) -> (unit, run_error) result
   = "caml_actor_run"
@@ -225,6 +238,31 @@ external stats : unit -> stats
   = "caml_actor_stats"
 (** [stats ()] snapshots scheduler and mailbox counts. It raises
     [Invalid_argument] outside an actor world. *)
+
+module Timer : sig
+  type t
+  type error = Invalid_duration | Timer_limit | Timer_unavailable
+             | Invalid_timer | Timer_unsupported
+
+  val after : float -> (t, error) result
+  (** Register an owned one-shot monotonic timer in seconds. Finite,
+      nonnegative durations are rounded upward to nanoseconds; invalid or
+      overflowing durations publish nothing. Ready unconsumed timers count
+      against [max_timers]. Unsupported platforms report [Timer_unsupported]. *)
+
+  val await : t -> (unit, error) result
+  (** Suspend only the owner until expiry, then consume exactly once.
+      Does not touch the user mailbox. Foreign or consumed tokens are
+      invalid. *)
+
+  val cancel : t -> (bool, error) result
+  (** Consume the timer, returning [true] if cancelled before expiry, [false]
+      otherwise. Either outcome invalidates the token and releases its quota. *)
+
+  val sleep : float -> (unit, error) result
+  (** Register and await one timer. Zero yields once without reserving a timer.
+      Actor cancellation removes all its timers. Timers may run late. *)
+end
 
 module Supervisor : sig
   type restart = Permanent | Transient | Temporary
