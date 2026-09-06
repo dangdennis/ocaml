@@ -214,3 +214,217 @@ external yield : unit -> unit
 
 external stats : unit -> stats
   = "caml_actor_stats"
+
+module Supervisor = struct
+  type restart = Permanent | Transient | Temporary
+
+  type child = Child : {
+    id : string;
+    restart : restart;
+    start : int -> 'message inbox -> unit;
+    on_start : 'message pid -> unit;
+    on_exit : exit_reason -> unit;
+  } -> child
+
+  type intensity = {
+    max_restarts : int;
+    within : int;
+  }
+
+  type error =
+    | Invalid_configuration of string
+    | Initial_start_failed of string * spawn_monitored_error
+    | Restart_failed of string * spawn_monitored_error
+    | Restart_intensity_exceeded of string
+    | Restart_attempt_exhausted of string
+    | Clock_moved_backwards
+
+  type running = Running : {
+    id : string;
+    restart : restart;
+    start : int -> 'message inbox -> unit;
+    on_start : 'message pid -> unit;
+    on_exit : exit_reason -> unit;
+    attempt : int;
+    pid : 'message pid;
+    monitor : monitor;
+  } -> running
+
+  let rec reverse_append source destination =
+    match source with
+    | [] -> destination
+    | head :: tail -> reverse_append tail (head :: destination)
+
+  let reverse source = reverse_append source []
+
+  let rec has_id id = function
+    | [] -> false
+    | Child child :: tail -> id = child.id || has_id id tail
+
+  let validate intensity children =
+    if intensity.max_restarts <= 0 then
+      Error (Invalid_configuration "max_restarts must be positive")
+    else if intensity.within <= 0 then
+      Error (Invalid_configuration "within must be positive")
+    else
+      let rec loop seen = function
+        | [] ->
+            if seen = [] then
+              Error (Invalid_configuration "at least one child is required")
+            else Ok ()
+        | Child child :: tail ->
+            if child.id = "" then
+              Error (Invalid_configuration "child id must not be empty")
+            else if has_id child.id seen then
+              Error (Invalid_configuration "child ids must be unique")
+            else loop (Child child :: seen) tail
+      in
+      loop [] children
+
+  let spawn_child (Child child) attempt =
+    match spawn_monitored (child.start attempt) with
+    | Error error -> Error error
+    | Ok (pid, monitor) ->
+        child.on_start pid;
+        Ok (Running {
+          id = child.id;
+          restart = child.restart;
+          start = child.start;
+          on_start = child.on_start;
+          on_exit = child.on_exit;
+          attempt;
+          pid;
+          monitor;
+        })
+
+  let restart_child (Running child) =
+    match spawn_monitored (child.start (child.attempt + 1)) with
+    | Error error -> Error error
+    | Ok (pid, monitor) ->
+        child.on_start pid;
+        Ok (Running {
+          id = child.id;
+          restart = child.restart;
+          start = child.start;
+          on_start = child.on_start;
+          on_exit = child.on_exit;
+          attempt = child.attempt + 1;
+          pid;
+          monitor;
+        })
+
+  let running_id (Running child) = child.id
+  let running_monitor (Running child) = child.monitor
+  let running_attempt (Running child) = child.attempt
+
+  let abnormal = function
+    | Normal | Cancelled -> false
+    | Uncaught_exception _ | Heap_limit | Mailbox_limit
+    | Unsupported_operation _ | Runtime_failure _ -> true
+
+  let should_restart (Running child) reason =
+    match child.restart with
+    | Permanent -> true
+    | Transient -> abnormal reason
+    | Temporary -> false
+
+  let notify_exit (Running child) reason = child.on_exit reason
+
+  let rec cancel_running = function
+    | [] -> ()
+    | Running child :: tail ->
+        begin match cancel child.pid with
+        | Ok () | Error Cancel_missing | Error Cancel_stale -> ()
+        | Error Cancel_self -> invalid_arg "Actor.Supervisor.cancel self"
+        end;
+        let reason = await_exit child.monitor in
+        child.on_exit reason;
+        cancel_running tail
+
+  let shutdown running = cancel_running (reverse running)
+
+  let rec start_all started = function
+    | [] -> Ok (reverse started)
+    | (Child child as spec) :: tail ->
+        begin match spawn_child spec 0 with
+        | Ok running -> start_all (running :: started) tail
+        | Error error ->
+            cancel_running started;
+            Error (Initial_start_failed (child.id, error))
+        end
+
+  let rec monitors = function
+    | [] -> []
+    | running :: tail -> running_monitor running :: monitors tail
+
+  let rec split_at index before = function
+    | [] -> invalid_arg "Actor.Supervisor.await_any_exit index"
+    | head :: tail ->
+        if index = 0 then (head, before, tail)
+        else split_at (index - 1) (head :: before) tail
+
+  let keep_recent cutoff history =
+    let rec loop kept count = function
+      | [] -> (kept, count)
+      | timestamp :: tail ->
+          if timestamp >= cutoff then loop (timestamp :: kept) (count + 1) tail
+          else loop kept count tail
+    in
+    loop [] 0 history
+
+  let record_restart clock intensity last_time history id =
+    let now = clock () in
+    if now < 0 || now < last_time then Error Clock_moved_backwards
+    else
+      let recent, recent_count =
+        keep_recent (now - intensity.within) history
+      in
+      if recent_count >= intensity.max_restarts then
+        Error (Restart_intensity_exceeded id)
+      else Ok (now, now :: recent)
+
+  let run_one_for_one ~clock ~intensity children =
+    match validate intensity children with
+    | Error _ as error -> error
+    | Ok () ->
+        begin match start_all [] children with
+        | Error _ as error -> error
+        | Ok initial ->
+            let rec loop last_time history running =
+              match running with
+              | [] -> Ok ()
+              | _ ->
+                  let index, reason = await_any_exit (monitors running) in
+                  let exited, before, after = split_at index [] running in
+                  notify_exit exited reason;
+                  let remaining = reverse_append before after in
+                  if not (should_restart exited reason) then
+                    loop last_time history remaining
+                  else if running_attempt exited = max_int then begin
+                    shutdown remaining;
+                    Error (Restart_attempt_exhausted (running_id exited))
+                  end
+                  else
+                    begin match
+                      record_restart clock intensity last_time history
+                        (running_id exited)
+                    with
+                    | Error error ->
+                        shutdown remaining;
+                        Error error
+                    | Ok (next_time, next_history) ->
+                        begin match restart_child exited with
+                        | Error error ->
+                            shutdown remaining;
+                            Error (Restart_failed (running_id exited, error))
+                        | Ok replacement ->
+                            let next =
+                              reverse_append before (replacement :: after)
+                            in
+                            loop next_time next_history next
+                        end
+                    end
+            in
+            loop (-1) [] initial
+        end
+end
