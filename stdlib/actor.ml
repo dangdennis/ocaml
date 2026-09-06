@@ -81,6 +81,10 @@ type spawn_error =
   | Initial_heap_limit
   | Unsupported_capture of string
 
+type spawn_monitored_error =
+  | Monitored_spawn_error of spawn_error
+  | Monitored_monitor_limit
+
 type send_error =
   | No_such_actor
   | Message_too_large
@@ -160,6 +164,14 @@ let spawn_with_heap_limits limits entry =
   spawn_request
     (limits.initial_words, limits.maximum_words, entry)
 
+type 'message monitored_spawn_request = int * ('message inbox -> unit)
+
+external monitored_spawn_request : 'message monitored_spawn_request ->
+  (('message pid * monitor), spawn_monitored_error) result
+  = "caml_actor_spawn"
+
+let spawn_monitored entry = monitored_spawn_request (2, entry)
+
 type 'message monitor_request = int * 'message pid
 
 external monitor_request : 'message monitor_request ->
@@ -188,6 +200,14 @@ external receive : 'message inbox -> 'message
 
 external await_exit : monitor -> exit_reason
   = "caml_actor_receive"
+
+type await_any_exit_request = int * monitor list
+
+external await_any_exit_request : await_any_exit_request ->
+  int * exit_reason
+  = "caml_actor_receive"
+
+let await_any_exit monitors = await_any_exit_request (1, monitors)
 
 external yield : unit -> unit
   = "caml_actor_yield"

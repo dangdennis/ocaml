@@ -94,6 +94,10 @@ type spawn_error =
   | Initial_heap_limit
   | Unsupported_capture of string
 
+type spawn_monitored_error =
+  | Monitored_spawn_error of spawn_error
+  | Monitored_monitor_limit
+
 type send_error =
   | No_such_actor
   | Message_too_large
@@ -166,6 +170,11 @@ val spawn_with_heap_limits : heap_limits -> ('message inbox -> unit) ->
 (** [spawn_with_heap_limits limits entry] overrides the configured child heap
     limits for one spawn. Invalid limits return [Error Initial_heap_limit]. *)
 
+val spawn_monitored : ('message inbox -> unit) ->
+  (('message pid * monitor), spawn_monitored_error) result
+(** [spawn_monitored entry] transactionally publishes a child and a monitor
+    owned by the calling actor. Failure publishes neither resource. *)
+
 val monitor : _ pid -> (monitor, monitor_error) result
 (** [monitor pid] registers the calling actor to receive exactly one exit
     reason for the current generation of [pid]. Dead empty slots report
@@ -201,6 +210,12 @@ val await_exit : monitor -> exit_reason
 (** [await_exit monitor] blocks only the calling actor until the monitored
     actor exits. Exit events do not enter or reorder the typed user mailbox.
     A forged, foreign, or already-consumed monitor fails closed. *)
+
+val await_any_exit : monitor list -> int * exit_reason
+(** [await_any_exit monitors] blocks until one owned monitor is ready. The
+    index of the first ready monitor in list order is returned and that
+    monitor is consumed; all others remain live.
+    Empty, duplicate, forged, foreign, or consumed monitor sets fail closed. *)
 
 external yield : unit -> unit
   = "caml_actor_yield"
