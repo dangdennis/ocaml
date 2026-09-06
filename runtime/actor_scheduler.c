@@ -209,6 +209,7 @@ struct caml_actor_prepared_spawn {
   struct stack_info *stack;
   struct caml_actor_heap *heap;
   struct caml_bytecode_state bytecode;
+  struct caml_actor_monitor *monitor;
 };
 
 struct caml_actor_prepared_send {
@@ -1256,10 +1257,46 @@ uintnat caml_actor_scheduler_prepared_pid(
   return prepared == NULL ? 0 : prepared->pid;
 }
 
+enum caml_actor_monitor_status caml_actor_scheduler_prepare_spawn_monitor(
+  struct caml_actor_prepared_spawn *prepared, uintnat *monitor_id)
+{
+  struct caml_actor_scheduler *scheduler;
+  struct caml_actor_monitor *monitor;
+
+  if (monitor_id != NULL) *monitor_id = 0;
+  if (prepared == NULL || prepared->scheduler == NULL || monitor_id == NULL
+      || prepared->parent_index == ACTOR_SLOT_NONE
+      || prepared->monitor != NULL) {
+    return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+  }
+  scheduler = prepared->scheduler;
+  if (!running_context_matches(scheduler)
+      || scheduler->current != prepared->parent_index) {
+    return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+  }
+  if (scheduler->next_monitor_id == 0
+      || scheduler->next_monitor_id > (uintnat)Max_long) {
+    return CAML_ACTOR_MONITOR_RESOURCE_UNAVAILABLE;
+  }
+  if (scheduler->monitor_count >= scheduler->monitor_limit) {
+    increment_counter(&scheduler->monitor_quota_failures);
+    return CAML_ACTOR_MONITOR_LIMIT;
+  }
+  monitor = calloc(1, sizeof(*monitor));
+  if (monitor == NULL) return CAML_ACTOR_MONITOR_RESOURCE_UNAVAILABLE;
+  monitor->id = scheduler->next_monitor_id++;
+  monitor->watcher_pid = scheduler->slots[scheduler->current].pid;
+  monitor->target_pid = prepared->pid;
+  prepared->monitor = monitor;
+  *monitor_id = monitor->id;
+  return CAML_ACTOR_MONITOR_OK;
+}
+
 void caml_actor_scheduler_abort_prepared(
   struct caml_actor_prepared_spawn *prepared)
 {
   if (prepared == NULL) return;
+  free(prepared->monitor);
   if (prepared->stack != NULL) caml_free_stack(prepared->stack);
   if (prepared->heap != NULL) caml_actor_heap_destroy(prepared->heap);
   free(prepared);
@@ -1308,6 +1345,15 @@ int caml_actor_scheduler_commit_prepared(
   prepared->stack = NULL;
   prepared->heap = NULL;
   if (root) scheduler->root_published = 1;
+  if (prepared->monitor != NULL) {
+    prepared->monitor->next = scheduler->monitors;
+    scheduler->monitors = prepared->monitor;
+    prepared->monitor = NULL;
+    increment_counter(&scheduler->monitor_count);
+    if (scheduler->monitor_count > scheduler->peak_monitor_count) {
+      scheduler->peak_monitor_count = scheduler->monitor_count;
+    }
+  }
   increment_counter(&scheduler->total_spawned);
   enqueue_tail(scheduler, prepared->index);
   trace_data[0] = caml_actor_heap_used_words(slot->heap);
@@ -1317,6 +1363,9 @@ int caml_actor_scheduler_commit_prepared(
                trace_data);
   trace_record_state(scheduler, slot);
   free(prepared);
+#ifdef DEBUG
+  CAMLassert(scheduler_monitors_valid(scheduler));
+#endif
   return 1;
 }
 
@@ -1854,6 +1903,19 @@ enum caml_actor_monitor_status caml_actor_scheduler_peek_exit(
   if (!(*link)->ready) return CAML_ACTOR_MONITOR_PENDING;
   *reason = (*link)->reason;
   return CAML_ACTOR_MONITOR_READY;
+}
+
+enum caml_actor_monitor_status caml_actor_scheduler_validate_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id)
+{
+  uintnat watcher_pid;
+
+  if (!running_context_matches(scheduler)) {
+    return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+  }
+  watcher_pid = scheduler->slots[scheduler->current].pid;
+  return find_monitor(scheduler, monitor_id, watcher_pid) == NULL
+    ? CAML_ACTOR_MONITOR_INVALID_CONTEXT : CAML_ACTOR_MONITOR_OK;
 }
 
 static int remove_monitor(struct caml_actor_scheduler *scheduler,
