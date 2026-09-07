@@ -1,17 +1,17 @@
 # Heap-isolated actors: MVP contract
 
 This document is the normative contract for the experimental actor runtime.
-PR #1 defines requirements and test support; it implements no actor runtime.
-The `Actor` module remains unavailable through PR #6. Public actor entry starts
-in PR #7, and independent collection in PR #9 gates the heap-isolation claim.
-All PR numbers below refer to actual GitHub pull requests.
+PR 1 defines requirements and test support; it implements no actor runtime.
+The `Actor` module remains unavailable through PR 5. Public actor entry starts
+in PR 6, and independent collection in PR 8 gates the heap-isolation claim.
+PR numbers below refer to stack sequence positions, not GitHub issue numbers.
 
 ## Scope
 
 The planned MVP targets Linux x86-64, bytecode, one OS thread, and one
 runtime-owned scheduler. It must provide private actor heaps, FIFO mailboxes,
 reduction-based preemption, and actor-local failure. It is not a security
-sandbox. These are requirements for subsequent PRs, not capabilities of PR #1.
+sandbox. These are requirements for subsequent PRs, not capabilities of PR 1.
 
 Native code, multiple Domains, selective receive, links, monitors, timers,
 blocking I/O, distribution, arbitrary C stubs, effects, and finalizers are out
@@ -20,8 +20,8 @@ runtime state.
 
 ## API
 
-The planned public surface has this shape. PR #7 introduces actor entry,
-spawn, self, and yield; PR #8 adds send and receive:
+The planned public surface has this shape. PR 6 introduces actor entry,
+spawn, self, and yield; PR 7 adds send and receive:
 
 ```ocaml
 module Actor : sig
@@ -54,7 +54,7 @@ module Actor : sig
 end
 ```
 
-These constructors are part of the PR #1 contract. Adding an error case later
+These constructors are part of the PR 1 contract. Adding an error case later
 is an API change and requires a contract revision. Error strings are copied to
 the host only after they have a pointer-free representation; actor heap values
 never escape through an error.
@@ -90,7 +90,7 @@ a child whose copied initial graph exceeds its quota. `Message_too_large`
 reports an envelope quota violation. These quota checks happen before a child
 or envelope becomes visible.
 
-## PR #2 resumable-interpreter boundary
+## PR 2 resumable-interpreter boundary
 
 `caml_bytecode_interpreter_slice` is an internal mechanism, not an actor API.
 A reduction is one dispatch of a bytecode instruction. A finite budget is
@@ -125,7 +125,7 @@ fixed until terminal return. The active trap offset is captured at every stop;
 the caller offset is restored for the C interval and the active offset is
 reinstalled on resume.
 
-PR #2 deliberately supports only one suspended computation on the Domain's
+PR 2 deliberately supports only one suspended computation on the Domain's
 current stack, resumed synchronously from the same outer C invocation. It does
 not yet switch a suspended state away from the current stack, run unrelated
 OCaml code between slices, or preserve independent debugger and backtrace
@@ -133,7 +133,7 @@ state. Separate actor stacks and complete host-context switching are later
 claim gates. A finite slice that reaches a non-entry effect stack is rejected;
 effects remain outside the MVP contract.
 
-## PR 2 fixed-arena boundary
+## PR 3 fixed-arena boundary
 
 An active internal actor heap redirects both small and direct-large runtime
 allocation into one fixed, downward-growing arena. The payload mapping has an
@@ -159,16 +159,32 @@ an exact block owned by the same arena, or a validated infix pointer into a
 same-owner closure. Stock-young, unregistered host/shared, malformed-interior,
 and foreign-owner pointers are rejected. Closure code pointers must be aligned
 and name a registered code fragment. No general frozen host range is approved
-before PR 4.
+at this boundary.
 
 `caml_modify` and `caml_initialize` bypass stock barriers only for a checked
 same-owner destination and value. A last-resort guard rejects any direct call
 to `caml_shared_try_alloc` while an arena is active. Atomic operations, bulk
 array operations, raw bytecode writes, arbitrary primitives, urgent-GC paths,
-and switching OCaml execution between arenas have not yet been audited. PR 2
+and switching OCaml execution between arenas have not yet been audited. PR 3
 therefore proves physical separation and explicit ownership verification only;
 it adds neither runnable actors nor independent collection, and it makes no
 heap-isolation claim.
+
+The sequence numbers in this document refer to stack positions; PR 3 is
+GitHub pull request #4. Guard pages bound the page-rounded mapping, not every
+logical-quota boundary or individual object. The allocator enforces the word
+quota, including object headers. The shadow ledger is additional host memory:
+it reserves one header-sized slot per quota word, roughly doubling payload
+storage before mapping and metadata overhead.
+
+The verifier is an explicit diagnostic, not a sandbox or an instruction-boundary
+check. Checked stores validate destination ownership and the new reference;
+they do not establish that every raw write or object representation is valid.
+Code-fragment membership and alignment do not prove that a code pointer names
+an instruction boundary. The internal caller must supply trusted bytecode.
+Each pointer lookup validates and walks an arena, so reference-heavy heaps can
+make full verification quadratic. Checked stores also walk allocation layouts.
+No production throughput or latency guarantee is made at this boundary.
 
 ## Isolation invariants
 
@@ -266,16 +282,16 @@ replay divergence, and an `ACTOR_SEED` plus `ACTOR_TRACE` command.
 
 ## Claim gates
 
-- PR #1 specifies this contract and makes the harness itself executable.
-- PR #2 proves resumable bytecode and safe reduction stops.
-- PR #4 proves disjoint allocation and mandatory owner verification.
-- PR #5 proves deterministic scheduling and stale-PID rejection.
-- PR #6 establishes the runtime safety fence.
-- PR #7 proves transactional actor entry and spawn copying.
-- PR #8 proves pointer-free FIFO messaging.
-- PR #9 proves independent private collection. Only then is `heap-isolated` an
+- PR 1 specifies this contract and makes the harness itself executable.
+- PR 2 proves resumable bytecode and safe reduction stops.
+- PR 3 proves disjoint allocation and mandatory owner verification.
+- PR 4 proves deterministic scheduling and stale-PID rejection.
+- PR 5 establishes the runtime safety fence.
+- PR 6 proves transactional actor entry and spawn copying.
+- PR 7 proves pointer-free FIFO messaging.
+- PR 8 proves independent private collection. Only then is `heap-isolated` an
   accurate implementation claim.
-- PR #10 proves failure containment, deterministic cleanup, and stress replay.
+- PR 9 proves failure containment, deterministic cleanup, and stress replay.
 
 ## Acceptance cases
 
@@ -283,19 +299,19 @@ Each case becomes an executable test in the PR named below. Keeping future
 cases here, rather than as skipped tests, prevents uncompiled tests from
 creating a false-green signal.
 
-- PR #2: uninterrupted versus many-stop results, exceptions, and backtraces;
+- PR 2: uninterrupted versus many-stop results, exceptions, and backtraces;
   stop only at opcode boundaries and after primitives have returned.
-- PR #4: alternating contexts allocate in disjoint ranges; stock-major
+- PR 3: alternating contexts allocate in disjoint ranges; stock-major
   allocation and an injected foreign edge are rejected.
-- PR #5: two CPU-bound actors both progress; stale PIDs never revive.
-- PR #6: frozen global mutation and unsafe primitives fail closed.
-- PR #7: captured refs diverge after spawn; actor entry and copied captures
+- PR 4: two CPU-bound actors both progress; stale PIDs never revive.
+- PR 5: frozen global mutation and unsafe primitives fail closed.
+- PR 6: captured refs diverge after spawn; actor entry and copied captures
   preserve the freeze boundary and safe-language closure.
-- PR #8: FIFO wakeup, sender/receiver mutation independence, cycle and alias
+- PR 7: FIFO wakeup, sender/receiver mutation independence, cycle and alias
   preservation, and transactional rejection of unsupported messages.
-- PR #9: repeated moving GC in actor A neither scans nor changes actor B; all
+- PR 8: repeated moving GC in actor A neither scans nor changes actor B; all
   saved roots survive movement; whole-heap exit reclamation is complete.
-- PR #10: child exception and quota exhaustion leave peers alive; root failure
+- PR 9: child exception and quota exhaustion leave peers alive; root failure
   shuts down cleanly; deadlock, fault injection, and seeded replay agree with
   the reference model.
 
