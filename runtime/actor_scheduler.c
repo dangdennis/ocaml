@@ -20,6 +20,7 @@
 
 #include "caml/actor_heap.h"
 #include "caml/actor_scheduler.h"
+#include "caml/actor_world.h"
 #include "caml/codefrag.h"
 #include "caml/debugger.h"
 #include "caml/domain.h"
@@ -28,11 +29,14 @@
 #include "caml/gc_ctrl.h"
 #include "caml/interp.h"
 #include "caml/misc.h"
+#include "caml/prims.h"
 #include "caml/signals.h"
 
 #define ACTOR_SLOT_NONE UINT32_MAX
 
 #if !defined(NATIVE_CODE)
+
+CAMLextern value caml_int_compare(value left, value right);
 
 struct caml_actor_slot {
   enum caml_actor_lifecycle lifecycle;
@@ -396,7 +400,7 @@ struct caml_actor_step caml_actor_scheduler_step(
   if (!refresh_host_context(scheduler)) {
     caml_fatal_error("actor scheduler entered outside its host context");
   }
-  if (caml_check_pending_actions()) {
+  if (caml_check_pending_actions() && !caml_actor_world_is_frozen()) {
     step.reason = CAML_ACTOR_STEP_HOST_ACTION;
     return step;
   }
@@ -410,6 +414,7 @@ struct caml_actor_step caml_actor_scheduler_step(
   slot->dispatches++;
   scheduler->current = index;
   domain->current_stack = slot->stack;
+  domain->local_roots = NULL;
   domain->backtrace_active = 0;
   domain->trap_barrier_off = 0;
   domain->trap_barrier_block = INT64_MIN;
@@ -417,6 +422,7 @@ struct caml_actor_step caml_actor_scheduler_step(
   if (!caml_actor_heap_activate(slot->heap)) {
     slot->stack = domain->current_stack;
     domain->current_stack = scheduler->host_stack;
+    domain->local_roots = scheduler->host_local_roots;
     domain->backtrace_active = scheduler->host_backtrace_active;
     domain->trap_barrier_off = scheduler->host_trap_barrier_off;
     domain->trap_barrier_block = scheduler->host_trap_barrier_block;
@@ -436,6 +442,7 @@ struct caml_actor_step caml_actor_scheduler_step(
   slot->stack = domain->current_stack;
   caml_actor_heap_deactivate();
   domain->current_stack = scheduler->host_stack;
+  domain->local_roots = scheduler->host_local_roots;
   domain->backtrace_active = scheduler->host_backtrace_active;
   domain->trap_barrier_off = scheduler->host_trap_barrier_off;
   domain->trap_barrier_block = scheduler->host_trap_barrier_block;
@@ -468,6 +475,11 @@ struct caml_actor_step caml_actor_scheduler_step(
     case CAML_BYTECODE_STOP_UNSUPPORTED:
       slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
       slot->failure = CAML_ACTOR_FAILURE_UNSUPPORTED;
+      step.reason = CAML_ACTOR_STEP_FAILED;
+      break;
+    case CAML_BYTECODE_STOP_HEAP_EXHAUSTED:
+      slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
+      slot->failure = CAML_ACTOR_FAILURE_HEAP_EXHAUSTED;
       step.reason = CAML_ACTOR_STEP_FAILED;
       break;
     case CAML_BYTECODE_STOP_VALUE:
@@ -590,8 +602,9 @@ int caml_actor_scheduler_is_running(void)
 
 int caml_actor_scheduler_primitive_allowed(uintnat primitive)
 {
-  (void)primitive;
-  return 0;
+  if (primitive >= (uintnat)caml_prim_table.size) return 0;
+  return (c_primitive)caml_prim_table.contents[primitive]
+    == (c_primitive)caml_int_compare;
 }
 
 #else /* NATIVE_CODE */
@@ -676,7 +689,7 @@ int caml_actor_scheduler_is_running(void)
 int caml_actor_scheduler_primitive_allowed(uintnat primitive)
 {
   (void)primitive;
-  return 1;
+  return 0;
 }
 
 #endif /* NATIVE_CODE */
