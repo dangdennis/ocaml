@@ -1,0 +1,48 @@
+#!/bin/sh
+
+set -eu
+
+if [ "${os_type}" = 'Win32' ]; then
+  ocamlrun=$(cygpath "${ocamlrun}")
+fi
+
+program_dir=$(dirname "${program}")
+work_dir="${program_dir}/actorcheck-input"
+mkdir -p "${work_dir}"
+cp "${test_source_directory}/fixture_helper.ml" "${work_dir}/"
+cp "${test_source_directory}/fixture.ml" "${work_dir}/"
+cd "${work_dir}"
+
+fixture=actorcheck-fixture.byte
+malformed_code=actorcheck-malformed-code.byte
+malformed_data=actorcheck-malformed-data.byte
+malformed_symb=actorcheck-malformed-symb.byte
+"${ocamlrun}" "${ocamlsrcdir}/ocamlc" -nopervasives \
+  -use-runtime "${ocamlrun}" \
+  -nostdlib -I "${ocamlsrcdir}/stdlib" \
+  -o "${fixture}" \
+  fixture_helper.ml fixture.ml
+
+"${ocamlrun}" "${ocamlsrcdir}/tools/ocamlactorcheck" \
+  "${fixture}" > "${output}"
+
+for mode in code data symb; do
+  case "${mode}" in
+    code) malformed=${malformed_code} ;;
+    data) malformed=${malformed_data} ;;
+    symb) malformed=${malformed_symb} ;;
+  esac
+  "${ocamlrun}" "${program}" "${mode}" "${fixture}" "${malformed}"
+  if "${ocamlrun}" "${ocamlsrcdir}/tools/ocamlactorcheck" \
+      "${malformed}" >> "${output}" 2>&1; then
+    echo "malformed ${mode} input unexpectedly accepted" >> "${output}"
+    exit 1
+  else
+    status=$?
+    if [ "${status}" -ne 2 ]; then
+      echo "malformed ${mode} input exited with ${status}, expected 2" \
+        >> "${output}"
+      exit 1
+    fi
+  fi
+done
