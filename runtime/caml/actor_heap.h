@@ -12,7 +12,7 @@
 /*                                                                        */
 /**************************************************************************/
 
-/* Internal fixed actor arenas and their ownership verifier. */
+/* Internal semispace actor heaps and their ownership verifier. */
 
 #ifndef CAML_ACTOR_HEAP_H
 #define CAML_ACTOR_HEAP_H
@@ -69,6 +69,9 @@ CAMLextern value caml_actor_heap_alloc_or_raise(
   reserved_t reserved);
 CAMLextern int caml_actor_heap_allocation_supported(
   mlsize_t wosize, tag_t tag, reserved_t reserved);
+CAMLextern int caml_actor_heap_collect(struct caml_actor_heap *heap);
+CAMLextern int caml_actor_heap_reserve(
+  struct caml_actor_heap *heap, mlsize_t words);
 
 CAMLextern int caml_actor_heap_owns_value(
   const struct caml_actor_heap *heap, value value);
@@ -82,6 +85,8 @@ CAMLextern mlsize_t caml_actor_heap_used_words(
 CAMLextern uintnat caml_actor_heap_blocks(
   const struct caml_actor_heap *heap);
 CAMLextern uintnat caml_actor_heap_shared_bypasses(
+  const struct caml_actor_heap *heap);
+CAMLextern uintnat caml_actor_heap_collections(
   const struct caml_actor_heap *heap);
 CAMLextern void caml_actor_heap_note_shared_bypass(
   struct caml_actor_heap *heap);

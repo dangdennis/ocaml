@@ -140,13 +140,17 @@ sp is a local copy of the global variable Caml_state->current_stack->sp. */
 
 #define Actor_try_alloc(result, wosize, tag) do { \
   enum caml_actor_heap_alloc_error actor_alloc_error; \
-  (result) = caml_actor_heap_try_alloc( \
+  value actor_allocated; \
+  Setup_for_gc; \
+  actor_allocated = caml_actor_heap_try_alloc( \
     domain_state->actor_heap, (wosize), (tag), 0, &actor_alloc_error); \
-  if ((result) == 0) { \
+  Restore_after_gc; \
+  if (actor_allocated == 0) { \
     if (actor_alloc_error == CAML_ACTOR_HEAP_ALLOC_QUOTA) \
       goto actor_heap_exhausted; \
     goto unsupported_operation; \
   } \
+  (result) = actor_allocated; \
 } while (0)
 
 #ifdef THREADED_CODE
