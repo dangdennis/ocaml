@@ -21,6 +21,7 @@
 #include "caml/actor_copy.h"
 #include "caml/actor_heap.h"
 #include "caml/actor_scheduler.h"
+#include "caml/actor_wire.h"
 #include "caml/actor_world.h"
 #include "caml/callback.h"
 #include "caml/codefrag.h"
@@ -42,6 +43,8 @@ CAMLextern value caml_int_compare(value left, value right);
 CAMLextern value caml_actor_spawn(value closure);
 CAMLextern value caml_actor_self(value inbox);
 CAMLextern value caml_actor_yield(value unit);
+CAMLextern value caml_actor_send(value pid, value message);
+CAMLextern value caml_actor_receive(value inbox);
 
 struct caml_actor_slot {
   enum caml_actor_lifecycle lifecycle;
@@ -55,6 +58,9 @@ struct caml_actor_slot {
   struct stack_info *stack;
   struct caml_actor_heap *heap;
   struct caml_bytecode_state bytecode;
+  struct caml_actor_prepared_send *mailbox_head;
+  struct caml_actor_prepared_send *mailbox_tail;
+  uintnat mailbox_length;
 };
 
 struct caml_actor_scheduler {
@@ -88,6 +94,14 @@ struct caml_actor_prepared_spawn {
   struct stack_info *stack;
   struct caml_actor_heap *heap;
   struct caml_bytecode_state bytecode;
+};
+
+struct caml_actor_prepared_send {
+  struct caml_actor_scheduler *scheduler;
+  uint32_t target_index;
+  uintnat target_pid;
+  struct caml_actor_envelope *envelope;
+  struct caml_actor_prepared_send *next;
 };
 
 static int scheduler_runtime_supported(void)
@@ -251,6 +265,18 @@ static uint32_t dequeue_head(struct caml_actor_scheduler *scheduler)
 
 static void release_slot_resources(struct caml_actor_slot *slot)
 {
+  struct caml_actor_prepared_send *message = slot->mailbox_head;
+
+  while (message != NULL) {
+    struct caml_actor_prepared_send *next = message->next;
+
+    caml_actor_wire_destroy(message->envelope);
+    free(message);
+    message = next;
+  }
+  slot->mailbox_head = NULL;
+  slot->mailbox_tail = NULL;
+  slot->mailbox_length = 0;
   if (slot->stack != NULL) {
     caml_free_stack(slot->stack);
     slot->stack = NULL;
@@ -260,6 +286,35 @@ static void release_slot_resources(struct caml_actor_slot *slot)
     slot->heap = NULL;
   }
 }
+
+#ifdef DEBUG
+static int scheduler_mailboxes_valid(
+  const struct caml_actor_scheduler *scheduler)
+{
+  for (uintnat index = 0; index < scheduler->capacity; index++) {
+    const struct caml_actor_slot *slot = &scheduler->slots[index];
+    const struct caml_actor_prepared_send *message = slot->mailbox_head;
+    const struct caml_actor_prepared_send *last = NULL;
+
+    for (uintnat count = 0; count < slot->mailbox_length; count++) {
+      if (message == NULL || message->scheduler != NULL
+          || message->target_index != index
+          || message->target_pid != slot->pid
+          || !caml_actor_wire_verify(message->envelope)) {
+        return 0;
+      }
+      last = message;
+      message = message->next;
+    }
+    if (message != NULL || last != slot->mailbox_tail
+        || ((slot->mailbox_length == 0)
+            != (slot->mailbox_head == NULL))) {
+      return 0;
+    }
+  }
+  return 1;
+}
+#endif
 
 struct caml_actor_scheduler *caml_actor_scheduler_create(
   uintnat capacity, uintnat reduction_budget)
@@ -663,6 +718,9 @@ struct caml_actor_step caml_actor_scheduler_step(
   if (!refresh_host_context(scheduler)) {
     caml_fatal_error("actor scheduler entered outside its host context");
   }
+#ifdef DEBUG
+  CAMLassert(scheduler_mailboxes_valid(scheduler));
+#endif
   if (caml_check_pending_actions() && !caml_actor_world_is_frozen()) {
     step.reason = CAML_ACTOR_STEP_HOST_ACTION;
     return step;
@@ -715,6 +773,9 @@ struct caml_actor_step caml_actor_scheduler_step(
   if (!host_context_matches(scheduler)) {
     caml_fatal_error("actor scheduler did not restore its host context");
   }
+#ifdef DEBUG
+  CAMLassert(scheduler_mailboxes_valid(scheduler));
+#endif
   verified = caml_actor_heap_verify(slot->heap);
   if (verified.error != CAML_ACTOR_HEAP_VERIFY_OK
       || caml_actor_heap_shared_bypasses(slot->heap) != 0) {
@@ -735,6 +796,10 @@ struct caml_actor_step caml_actor_scheduler_step(
       slot->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNABLE;
       enqueue_tail(scheduler, index);
       step.reason = CAML_ACTOR_STEP_YIELD;
+      break;
+    case CAML_BYTECODE_STOP_BLOCKED:
+      slot->lifecycle = CAML_ACTOR_LIFECYCLE_BLOCKED;
+      step.reason = CAML_ACTOR_STEP_BLOCKED;
       break;
     case CAML_BYTECODE_STOP_HOST_ACTION:
       slot->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNABLE;
@@ -797,6 +862,145 @@ static enum caml_actor_pid_lookup lookup_slot(
   }
   if (slot_out != NULL) *slot_out = slot;
   return CAML_ACTOR_PID_PRESENT;
+}
+
+static int slot_accepts_messages(const struct caml_actor_slot *slot)
+{
+  return slot->lifecycle == CAML_ACTOR_LIFECYCLE_RUNNABLE
+    || slot->lifecycle == CAML_ACTOR_LIFECYCLE_RUNNING
+    || slot->lifecycle == CAML_ACTOR_LIFECYCLE_BLOCKED;
+}
+
+enum caml_actor_send_status caml_actor_scheduler_can_send(
+  struct caml_actor_scheduler *scheduler, uintnat pid)
+{
+  const struct caml_actor_slot *slot;
+
+  if (!running_context_matches(scheduler)) {
+    return CAML_ACTOR_SEND_INVALID_CONTEXT;
+  }
+  if (lookup_slot(scheduler, pid, &slot) != CAML_ACTOR_PID_PRESENT
+      || !slot_accepts_messages(slot)) {
+    return CAML_ACTOR_SEND_NO_SUCH_ACTOR;
+  }
+  if (slot->mailbox_length == CAML_UINTNAT_MAX) {
+    return CAML_ACTOR_SEND_RESOURCE_UNAVAILABLE;
+  }
+  return CAML_ACTOR_SEND_OK;
+}
+
+enum caml_actor_send_status caml_actor_scheduler_prepare_send(
+  struct caml_actor_scheduler *scheduler, uintnat pid,
+  struct caml_actor_envelope *envelope,
+  struct caml_actor_prepared_send **prepared_out)
+{
+  struct caml_actor_prepared_send *prepared;
+  enum caml_actor_send_status status;
+
+  if (prepared_out != NULL) *prepared_out = NULL;
+  if (prepared_out == NULL || envelope == NULL
+      || !caml_actor_wire_verify(envelope)) {
+    return CAML_ACTOR_SEND_INVALID_CONTEXT;
+  }
+  status = caml_actor_scheduler_can_send(scheduler, pid);
+  if (status != CAML_ACTOR_SEND_OK) return status;
+  prepared = calloc(1, sizeof(*prepared));
+  if (prepared == NULL) return CAML_ACTOR_SEND_RESOURCE_UNAVAILABLE;
+  prepared->scheduler = scheduler;
+  prepared->target_index =
+    (uint32_t)(pid & CAML_ACTOR_PID_INDEX_MASK);
+  prepared->target_pid = pid;
+  prepared->envelope = envelope;
+  *prepared_out = prepared;
+  return CAML_ACTOR_SEND_OK;
+}
+
+void caml_actor_scheduler_abort_send(
+  struct caml_actor_prepared_send *prepared)
+{
+  if (prepared == NULL) return;
+  caml_actor_wire_destroy(prepared->envelope);
+  free(prepared);
+}
+
+int caml_actor_scheduler_commit_send(
+  struct caml_actor_prepared_send *prepared)
+{
+  struct caml_actor_scheduler *scheduler;
+  struct caml_actor_slot *slot;
+
+  if (prepared == NULL || prepared->scheduler == NULL
+      || prepared->envelope == NULL) {
+    return 0;
+  }
+  scheduler = prepared->scheduler;
+  if (caml_actor_scheduler_can_send(
+        scheduler, prepared->target_pid) != CAML_ACTOR_SEND_OK
+      || prepared->target_index >= scheduler->capacity) {
+    caml_actor_scheduler_abort_send(prepared);
+    return 0;
+  }
+  slot = &scheduler->slots[prepared->target_index];
+  if (slot->pid != prepared->target_pid
+      || !caml_actor_wire_verify(prepared->envelope)) {
+    caml_actor_scheduler_abort_send(prepared);
+    return 0;
+  }
+  prepared->scheduler = NULL;
+  prepared->next = NULL;
+  if (slot->mailbox_tail == NULL) {
+    slot->mailbox_head = prepared;
+  } else {
+    slot->mailbox_tail->next = prepared;
+  }
+  slot->mailbox_tail = prepared;
+  slot->mailbox_length++;
+  if (slot->lifecycle == CAML_ACTOR_LIFECYCLE_BLOCKED) {
+    slot->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNABLE;
+    enqueue_tail(scheduler, prepared->target_index);
+  }
+#ifdef DEBUG
+  CAMLassert(scheduler_mailboxes_valid(scheduler));
+#endif
+  return 1;
+}
+
+const struct caml_actor_envelope *
+caml_actor_scheduler_peek_current_message(
+  struct caml_actor_scheduler *scheduler)
+{
+  const struct caml_actor_slot *slot;
+
+  if (!running_context_matches(scheduler)) return NULL;
+  slot = &scheduler->slots[scheduler->current];
+  if (slot->mailbox_head == NULL) return NULL;
+  if (slot->mailbox_length == 0
+      || slot->mailbox_tail == NULL
+      || !caml_actor_wire_verify(slot->mailbox_head->envelope)) {
+    caml_fatal_error("invalid actor mailbox");
+  }
+  return slot->mailbox_head->envelope;
+}
+
+int caml_actor_scheduler_consume_current_message(
+  struct caml_actor_scheduler *scheduler)
+{
+  struct caml_actor_prepared_send *message;
+  struct caml_actor_slot *slot;
+
+  if (!running_context_matches(scheduler)) return 0;
+  slot = &scheduler->slots[scheduler->current];
+  message = slot->mailbox_head;
+  if (message == NULL || slot->mailbox_length == 0) return 0;
+  slot->mailbox_head = message->next;
+  if (slot->mailbox_head == NULL) slot->mailbox_tail = NULL;
+  slot->mailbox_length--;
+  caml_actor_wire_destroy(message->envelope);
+  free(message);
+#ifdef DEBUG
+  CAMLassert(scheduler_mailboxes_valid(scheduler));
+#endif
+  return 1;
 }
 
 enum caml_actor_pid_lookup caml_actor_scheduler_snapshot(
@@ -900,6 +1104,11 @@ int caml_actor_scheduler_request_yield(void)
   return request_control(CAML_ACTOR_CONTROL_YIELD);
 }
 
+int caml_actor_scheduler_request_blocked(void)
+{
+  return request_control(CAML_ACTOR_CONTROL_BLOCKED);
+}
+
 int caml_actor_scheduler_request_unsupported(void)
 {
   return request_control(CAML_ACTOR_CONTROL_UNSUPPORTED);
@@ -940,9 +1149,12 @@ int caml_actor_scheduler_primitive_allowed(uintnat primitive, int arity)
   if (arity == 1) {
     return function == (c_primitive)caml_actor_spawn
       || function == (c_primitive)caml_actor_self
-      || function == (c_primitive)caml_actor_yield;
+      || function == (c_primitive)caml_actor_yield
+      || function == (c_primitive)caml_actor_receive;
   }
-  return arity == 2 && function == (c_primitive)caml_int_compare;
+  return arity == 2
+    && (function == (c_primitive)caml_int_compare
+        || function == (c_primitive)caml_actor_send);
 }
 
 #else /* NATIVE_CODE */
@@ -1028,6 +1240,54 @@ void caml_actor_scheduler_abort_prepared(
   (void)prepared;
 }
 
+enum caml_actor_send_status caml_actor_scheduler_can_send(
+  struct caml_actor_scheduler *scheduler, uintnat pid)
+{
+  (void)scheduler;
+  (void)pid;
+  return CAML_ACTOR_SEND_INVALID_CONTEXT;
+}
+
+enum caml_actor_send_status caml_actor_scheduler_prepare_send(
+  struct caml_actor_scheduler *scheduler, uintnat pid,
+  struct caml_actor_envelope *envelope,
+  struct caml_actor_prepared_send **prepared)
+{
+  (void)scheduler;
+  (void)pid;
+  (void)envelope;
+  if (prepared != NULL) *prepared = NULL;
+  return CAML_ACTOR_SEND_INVALID_CONTEXT;
+}
+
+int caml_actor_scheduler_commit_send(
+  struct caml_actor_prepared_send *prepared)
+{
+  (void)prepared;
+  return 0;
+}
+
+void caml_actor_scheduler_abort_send(
+  struct caml_actor_prepared_send *prepared)
+{
+  (void)prepared;
+}
+
+const struct caml_actor_envelope *
+caml_actor_scheduler_peek_current_message(
+  struct caml_actor_scheduler *scheduler)
+{
+  (void)scheduler;
+  return NULL;
+}
+
+int caml_actor_scheduler_consume_current_message(
+  struct caml_actor_scheduler *scheduler)
+{
+  (void)scheduler;
+  return 0;
+}
+
 struct caml_actor_step caml_actor_scheduler_step(
   struct caml_actor_scheduler *scheduler)
 {
@@ -1071,6 +1331,11 @@ uintnat caml_actor_scheduler_current_pid(void)
 }
 
 int caml_actor_scheduler_request_yield(void)
+{
+  return 0;
+}
+
+int caml_actor_scheduler_request_blocked(void)
 {
   return 0;
 }
