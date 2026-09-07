@@ -49,6 +49,13 @@ value* caml_shared_try_alloc(struct caml_heap_state*,
 int caml_shared_heap_contains_block(
   struct caml_heap_state*, value candidate);
 
+/* Find the canonical live block containing an aligned candidate address.
+   Unlike ordinary heap-classification macros, this scans allocator metadata
+   before dereferencing [candidate]. */
+int caml_shared_heap_find_block(
+  struct caml_heap_state*, value candidate,
+  value *block, mlsize_t *offset_bytes);
+
 /* Copy the domain-local heap stats into a heap stats sample. */
 void caml_collect_heap_stats_sample(
   struct caml_heap_state* local,
