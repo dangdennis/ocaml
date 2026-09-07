@@ -20,6 +20,7 @@
 #include <string.h>
 #include <assert.h>
 #include "caml/addrmap.h"
+#include "caml/actor_heap.h"
 #include "caml/custom.h"
 #include "caml/runtime_events.h"
 #include "caml/fail.h"
@@ -495,6 +496,13 @@ value* caml_shared_try_alloc(struct caml_heap_state* local, mlsize_t wosize,
 {
   mlsize_t whsize = Whsize_wosize(wosize);
   value* p;
+  caml_domain_state *domain_state = Caml_state_opt;
+
+  if (CAMLunlikely(domain_state != NULL
+                   && domain_state->actor_heap != NULL)) {
+    caml_actor_heap_note_shared_bypass(domain_state->actor_heap);
+    return NULL;
+  }
 
   CAMLassert (wosize > 0);
   CAMLassert (tag != Infix_tag);

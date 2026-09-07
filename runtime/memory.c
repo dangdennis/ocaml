@@ -24,6 +24,7 @@
 #if defined(_WIN32)
 #include <malloc.h>
 #endif
+#include "caml/actor_heap.h"
 #include "caml/config.h"
 #include "caml/custom.h"
 #include "caml/misc.h"
@@ -209,6 +210,21 @@ CAMLno_tsan /* We remove the ThreadSanitizer instrumentation of memory accesses
                detect data races). */
 CAMLexport CAMLweakdef void caml_modify (volatile value *fp, value val)
 {
+  caml_domain_state *domain_state = Caml_state_opt;
+
+  if (CAMLunlikely(domain_state != NULL
+                   && domain_state->actor_heap != NULL)) {
+    enum caml_actor_heap_store_status actor_store =
+      caml_actor_heap_check_store(fp, val);
+
+    if (actor_store == CAML_ACTOR_HEAP_STORE_OK) {
+      *fp = val;
+      return;
+    } else {
+      caml_fatal_error("invalid actor-heap mutation");
+    }
+  }
+
 #if defined(WITH_THREAD_SANITIZER) && defined(NATIVE_CODE)
   caml_tsan_func_entry(__builtin_return_address(0));
 #endif
@@ -303,6 +319,21 @@ CAMLno_tsan /* Avoid instrumenting initializing writes with TSan: they should
                memory model). */
 CAMLexport CAMLweakdef void caml_initialize (volatile value *fp, value val)
 {
+  caml_domain_state *domain_state = Caml_state_opt;
+
+  if (CAMLunlikely(domain_state != NULL
+                   && domain_state->actor_heap != NULL)) {
+    enum caml_actor_heap_store_status actor_store =
+      caml_actor_heap_check_store(fp, val);
+
+    if (actor_store == CAML_ACTOR_HEAP_STORE_OK) {
+      *fp = val;
+      return;
+    } else {
+      caml_fatal_error("invalid actor-heap initialization");
+    }
+  }
+
 #ifdef DEBUG
   /* Previous value should not be a pointer.
      In the debug runtime, it can be either a TMC placeholder,
@@ -421,6 +452,17 @@ Caml_inline value alloc_shr(mlsize_t wosize, tag_t tag, reserved_t reserved,
 {
   Caml_check_caml_state();
   caml_domain_state *dom_st = Caml_state;
+
+  if (CAMLunlikely(dom_st->actor_heap != NULL)) {
+    if (noexc) {
+      return caml_actor_heap_try_alloc(
+        dom_st->actor_heap, wosize, tag, reserved, NULL);
+    } else {
+      return caml_actor_heap_alloc_or_raise(
+        dom_st->actor_heap, wosize, tag, reserved);
+    }
+  }
+
   value *v = caml_shared_try_alloc(dom_st->shared_heap,
                                    wosize, tag, reserved);
   if (v == NULL) {
