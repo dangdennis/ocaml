@@ -476,6 +476,63 @@ Build supervision on monitors rather than special scheduler shortcuts:
 Links, trap-exit behavior, and selective receive remain deferred unless the
 reference service demonstrates that they are necessary.
 
+### Design boundary
+
+The first supervisor is root-owned and implemented as ordinary OCaml over
+monitors and cancellation. It never reads the trace stream and the scheduler
+does not own a child tree. `spawn_monitored` atomically publishes a child and
+its caller-owned monitor, while `await_any_exit` provides a dedicated,
+deterministically ordered exit wait set without touching typed mailboxes.
+
+Restart policy uses an injected nonnegative monotonic integer clock. Layer 14
+therefore proves bounded windows without wall-clock sleeps or pulling timer
+waiting forward from Layer 15. Terminal failure cancels and awaits remaining
+children in reverse declaration order. Nested supervisor cascades remain
+deferred because links and general wait sets are still outside the contract.
+
+### Work sequence
+
+1. Add transactional monitored spawn without a new primitive name.
+2. Add an owned exit-only monitor wait set with deterministic selection.
+3. Implement validated permanent, transient, and temporary restart policy in
+   pure OCaml.
+4. Prove one-for-one identity replacement, sibling preservation, bounded
+   restart windows, and reverse shutdown.
+5. Stress quota failures, failed restarts, supervisor death, cleanup, tracing,
+   and PID reuse.
+6. Re-run compatibility, sanitizer, package, benchmark, hygiene, and
+   fresh-runner gates before publishing the layer.
+
+### Milestone tracker
+
+- [x] Publish child and monitor atomically with transactional quota rollback.
+- [x] Wait for any owned child exit without mailbox interference.
+- [x] Implement explicit permanent, transient, and temporary restart policy.
+- [x] Bound restart intensity through a deterministic monotonic clock seam.
+- [x] Prove one-for-one sibling preservation and reverse-order shutdown.
+- [x] Cover start/restart quota failure and root-supervisor cleanup.
+- [x] Pass 200-generation PID-reuse, structured-failure, and tracing stress.
+- [x] Pass the full compatibility, sanitizer, package, benchmark, hygiene, and
+      fresh-runner publication gates.
+
+### Validation checkpoint
+
+Layer 14 closed at implementation tip `cb66c61625`. Fresh-runner Actor Runtime
+(`34002422543`), Hygiene (`34002422475`), full Build (`34002422526`), and MSVC
+(`34002422484`) workflows passed at that exact tip: 35 checks passed and eight
+platform- or event-specific checks skipped as expected. Normal, debug,
+instrumented, ASan, and UBSan actor suites each passed 35 tests with the one
+expected native-runtime skip. Compatibility suites, the Astring package
+canary, benchmark smoke, supervision stress, cleanup, tracing, and PID-reuse
+checks all passed.
+
+### Current next action
+
+Begin Layer 15 timers from the published Layer 14 tip. Start with
+scheduler-owned monotonic timer identities, cancellation, and a deterministic
+clock seam before integrating timer readiness into scheduler deadlock and event
+waiting.
+
 ## Layer 15: timers and scheduler event waiting
 
 Add scheduler-owned monotonic timers and cancellation. Waiting on a timer or
