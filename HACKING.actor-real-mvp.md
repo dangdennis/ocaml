@@ -153,7 +153,16 @@ send links no envelope, changes no mailbox gauge, and wakes no actor.
 ## Timers and socket ownership
 
 Timers use scheduler monotonic time and a deterministic fake-clock backend in
-tests. Outstanding timer or I/O waits prevent a false deadlock.
+tests. Layer 15 timer waits prevent false deadlock only when they can wake a
+live actor. Unawaited timers do not resolve mailbox/monitor deadlock. The
+scheduler distinguishes wait reasons and retains absolute deadlines across
+retry and interrupted waiting. Socket readiness remains Layer 16 work.
+
+Timer lifecycle requests use checked tags 3/4 over `caml_actor_spawn/1`;
+await uses tag 2 over `caml_actor_receive/1`. No bootstrap-visible primitive
+was added. Successful mutations allocate their actor result before commit.
+See `runtime/README.actor-mvp.md` for duration conversion, limits, failure,
+cleanup, platform, and event-wait semantics.
 
 The scheduler owns raw descriptors. Actors hold generation-tagged immediate
 handles, and actor exit closes every resource it still owns. An accepted
@@ -180,7 +189,13 @@ val monitor : _ pid -> (monitor, monitor_error) result
 val await_exit : monitor -> exit_reason
 
 module Timer : sig
-  val sleep : float -> unit
+  type t
+  type error = Invalid_duration | Timer_limit | Timer_unavailable
+             | Invalid_timer | Timer_unsupported
+  val after : float -> (t, error) result
+  val await : t -> (unit, error) result
+  val cancel : t -> (bool, error) result
+  val sleep : float -> (unit, error) result
 end
 
 module Net : sig
