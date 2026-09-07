@@ -14,6 +14,7 @@
 
 #define CAML_INTERNALS
 
+#include <stdio.h>
 #include <string.h>
 
 #include "caml/actor_heap.h"
@@ -23,8 +24,11 @@
 #include "caml/alloc.h"
 #include "caml/domain_state.h"
 #include "caml/fail.h"
+#include "caml/instruct.h"
 #include "caml/memory.h"
 #include "caml/mlvalues.h"
+#include "caml/opnames.h"
+#include "caml/prims.h"
 
 #define ACTOR_MVP_CAPACITY 1024
 #define ACTOR_MVP_REDUCTIONS 1000
@@ -129,7 +133,8 @@ static value actor_send_error(int kind, const char *text)
 }
 
 static enum actor_run_outcome root_failure_outcome(
-  const struct caml_actor_snapshot *snapshot, const char **message)
+  const struct caml_actor_snapshot *snapshot,
+  char *detail, size_t detail_size, const char **message)
 {
   if (snapshot->failure == CAML_ACTOR_FAILURE_HEAP_EXHAUSTED) {
     return ACTOR_RUN_ROOT_HEAP_EXHAUSTED;
@@ -139,7 +144,28 @@ static enum actor_run_outcome root_failure_outcome(
     *message = "uncaught root actor exception";
     break;
   case CAML_ACTOR_FAILURE_UNSUPPORTED:
-    *message = "unsupported operation in root actor";
+    if (snapshot->unsupported.kind == CAML_ACTOR_UNSUPPORTED_OPCODE) {
+      const char *name = snapshot->unsupported.operation
+          < FIRST_UNIMPLEMENTED_OP
+        ? names_of_instructions[snapshot->unsupported.operation]
+        : "UNKNOWN";
+
+      snprintf(detail, detail_size,
+               "unsupported operation at opcode %s", name);
+      *message = detail;
+    } else if (snapshot->unsupported.kind
+                 == CAML_ACTOR_UNSUPPORTED_PRIMITIVE) {
+      const char *name = snapshot->unsupported.operation
+          < (uintnat)caml_prim_name_table.size
+        ? caml_prim_name_table.contents[snapshot->unsupported.operation]
+        : "unknown";
+
+      snprintf(detail, detail_size, "unsupported primitive %s/%d",
+               name, snapshot->unsupported.arity);
+      *message = detail;
+    } else {
+      *message = "unsupported operation in root actor";
+    }
     break;
   case CAML_ACTOR_FAILURE_INVALID_HEAP:
     *message = "root actor heap invariant failed";
@@ -164,6 +190,7 @@ CAMLprim value caml_actor_run(value root)
   const char *message = "actor runtime unavailable";
 
 #if !defined(NATIVE_CODE)
+  char detail_message[256];
   struct caml_actor_scheduler *scheduler = NULL;
   struct caml_actor_prepared_spawn *prepared = NULL;
   enum caml_actor_spawn_status spawn_status;
@@ -231,7 +258,8 @@ CAMLprim value caml_actor_run(value root)
             outcome = ACTOR_RUN_ROOT_FAILED;
             message = "root actor status unavailable";
           } else {
-            outcome = root_failure_outcome(&snapshot, &message);
+            outcome = root_failure_outcome(
+              &snapshot, detail_message, sizeof(detail_message), &message);
           }
         }
         break;
@@ -346,6 +374,40 @@ CAMLprim value caml_actor_yield(value unit)
   }
 #endif
   caml_invalid_argument("Actor.yield outside an actor world");
+}
+
+CAMLprim value caml_actor_stats(value unit)
+{
+#if !defined(NATIVE_CODE)
+  struct caml_actor_scheduler_stats stats;
+  value record;
+
+  if (!caml_actor_scheduler_stats(Caml_state->actor_scheduler, &stats)) {
+    caml_invalid_argument("Actor.stats outside an actor world");
+  }
+  record = actor_try_alloc(12, 0);
+  if (record == 0) return Val_unit;
+#define Store_stat(field, value) \
+  Field(record, (field)) = Val_long( \
+    (value) > (uintnat)Max_long ? Max_long : (intnat)(value))
+  Store_stat(0, stats.live_actors);
+  Store_stat(1, stats.runnable_actors);
+  Store_stat(2, stats.blocked_actors);
+  Store_stat(3, stats.total_spawned);
+  Store_stat(4, stats.total_exited);
+  Store_stat(5, stats.total_failed);
+  Store_stat(6, stats.total_dispatches);
+  Store_stat(7, stats.total_reduction_stops);
+  Store_stat(8, stats.messages_sent);
+  Store_stat(9, stats.messages_received);
+  Store_stat(10, stats.messages_dropped);
+  Store_stat(11, stats.mailbox_messages);
+#undef Store_stat
+  return record;
+#else
+  (void)unit;
+  caml_invalid_argument("Actor.stats outside an actor world");
+#endif
 }
 
 CAMLprim value caml_actor_send(value pid_value, value message)

@@ -468,12 +468,15 @@ static int discover_graph(struct actor_copy_context *context, value source)
   }
 
   for (uintnat index = 0; index < context->node_count; index++) {
-    struct actor_copy_node *node = &context->nodes[index];
-    mlsize_t first = node->tag == Closure_tag ? node->closure_env : 0;
+    value node_source = context->nodes[index].source;
+    mlsize_t node_wosize = context->nodes[index].wosize;
+    tag_t node_tag = context->nodes[index].tag;
+    mlsize_t first = node_tag == Closure_tag
+      ? context->nodes[index].closure_env : 0;
 
-    if (node->tag >= Forcing_tag && node->tag != Closure_tag) continue;
-    for (mlsize_t field = first; field < node->wosize; field++) {
-      if (!discover_value(context, Field(node->source, field))) return 0;
+    if (node_tag >= Forcing_tag && node_tag != Closure_tag) continue;
+    for (mlsize_t field = first; field < node_wosize; field++) {
+      if (!discover_value(context, Field(node_source, field))) return 0;
     }
   }
   return 1;

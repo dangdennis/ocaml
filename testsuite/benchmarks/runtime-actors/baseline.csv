@@ -1,0 +1,44 @@
+#**************************************************************************
+#*                                                                        *
+#*                                 OCaml                                  *
+#*                                                                        *
+#*                             Dennis Dang                                *
+#*                                                                        *
+#*   Copyright 2026 Dennis Dang                                           *
+#*                                                                        *
+#*   All rights reserved.  This file is distributed under the terms of    *
+#*   the GNU Lesser General Public License version 2.1, with the          *
+#*   special exception on linking described in the file LICENSE.          *
+#*                                                                        *
+#**************************************************************************
+sample,benchmark,operations,seconds,operations_per_second
+1,pure_loop,1000000,0.013643,73297662
+1,actor_pure_loop,1000000,0.024260,41220115
+1,empty_world,100,0.017459,5728
+1,spawn_ack,1000,0.102253,9780
+1,ping_pong_round_trip,10000,1.900688,5261
+1,graph_copy_128_round_trip,1000,0.680353,1470
+2,pure_loop,1000000,0.012715,78647267
+2,actor_pure_loop,1000000,0.024356,41057645
+2,empty_world,100,0.016326,6125
+2,spawn_ack,1000,0.088981,11238
+2,ping_pong_round_trip,10000,1.827613,5472
+2,graph_copy_128_round_trip,1000,0.666278,1501
+3,pure_loop,1000000,0.014259,70131145
+3,actor_pure_loop,1000000,0.026919,37148482
+3,empty_world,100,0.017310,5777
+3,spawn_ack,1000,0.095865,10431
+3,ping_pong_round_trip,10000,1.832101,5458
+3,graph_copy_128_round_trip,1000,0.657678,1521
+4,pure_loop,1000000,0.013898,71952799
+4,actor_pure_loop,1000000,0.023287,42942414
+4,empty_world,100,0.016381,6105
+4,spawn_ack,1000,0.090634,11033
+4,ping_pong_round_trip,10000,1.821189,5491
+4,graph_copy_128_round_trip,1000,0.678526,1474
+5,pure_loop,1000000,0.013447,74366030
+5,actor_pure_loop,1000000,0.023764,42080458
+5,empty_world,100,0.016542,6045
+5,spawn_ack,1000,0.098241,10179
+5,ping_pong_round_trip,10000,1.815267,5509
+5,graph_copy_128_round_trip,1000,0.661094,1513

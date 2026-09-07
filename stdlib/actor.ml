@@ -31,6 +31,21 @@ type send_error =
   | Message_too_large
   | Unsupported_message of string
 
+type stats = {
+  live_actors : int;
+  runnable_actors : int;
+  blocked_actors : int;
+  total_spawned : int;
+  total_exited : int;
+  total_failed : int;
+  total_dispatches : int;
+  total_reduction_stops : int;
+  messages_sent : int;
+  messages_received : int;
+  messages_dropped : int;
+  mailbox_messages : int;
+}
+
 external run : (unit inbox -> unit) -> (unit, run_error) result
   = "caml_actor_run"
 
@@ -50,3 +65,6 @@ external receive : 'message inbox -> 'message
 
 external yield : unit -> unit
   = "caml_actor_yield"
+
+external stats : unit -> stats
+  = "caml_actor_stats"
