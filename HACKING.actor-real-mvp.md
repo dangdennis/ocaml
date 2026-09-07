@@ -60,9 +60,12 @@ the structured exit-reason API lands in Layer 12.
 
 `Actor.stats ()` is an actor-world-only, deterministic snapshot. Its lifetime
 counters are monotonic and saturate at `max_int`; `mailbox_messages` is a
-current gauge, and `runnable_actors` includes the actor taking the snapshot.
-Retirement records unread envelopes in `messages_dropped`. Wall-clock and
-throughput measurements remain outside actor heaps in the benchmark harness.
+current gauge, `mailbox_bytes` is the current encoded-byte charge, and
+`runnable_actors` includes the actor taking the snapshot. The snapshot also
+reports immutable world limits and the calling actor's current heap capacity,
+maximum, and growth count. It obtains no foreign heap data. Retirement records
+unread envelopes in `messages_dropped`. Wall-clock and throughput measurements
+remain outside actor heaps in the benchmark harness.
 
 ## Monitoring, waiting, and failure data
 
@@ -77,39 +80,45 @@ explicit in the reason metadata.
 
 ## Limits
 
-The public shape frozen for Layers 11--13 is:
+The current Layer 11 public configuration shape is:
 
 ```ocaml
-type limits = {
-  initial_heap_words : int;
-  max_heap_words : int;
-  mailbox_messages : int;
-  mailbox_bytes : int;
-  timers : int;
-  resources : int;
+type heap_limits = {
+  initial_words : int;
+  maximum_words : int;
 }
 
 type world_config = {
-  reductions_per_slice : int;
+  root_heap : heap_limits;
+  child_heap : heap_limits;
   max_actors : int;
-  child_defaults : limits;
+  reductions_per_slice : int;
+  max_message_words : int;
+  max_mailbox_messages : int;
+  max_mailbox_bytes : int;
 }
 
-val default_limits : limits
 val default_world_config : world_config
-val run_with : world_config -> (unit inbox -> unit) ->
+val run_with_config : world_config -> (unit inbox -> unit) ->
   (unit, run_error) result
-val spawn_with : limits -> ('message inbox -> unit) ->
+val spawn_with_heap_limits : heap_limits -> ('message inbox -> unit) ->
   ('message pid, spawn_error) result
 ```
 
 Existing `run` and `spawn` remain convenience wrappers. Supervisor child
-specifications carry the same `limits` record, so restart behavior does not
-depend on ambient mutable configuration.
+specifications will carry explicit mailbox, timer, and resource limits as
+those later Layer 11--13 slices land, so restart behavior does not depend on
+ambient mutable configuration.
 
 Heap words, mailbox message count, mailbox encoded bytes, actor count, timer
 count, and scheduler-owned resource count all have explicit finite limits.
 Quota exhaustion is actor-local and observable through monitors.
+
+Layer 11 accounts queued mail globally at the scheduler boundary. An
+envelope's canonical byte charge is one root-token word plus the unique graph
+words discovered by the wire encoder, so aliases and cycles are charged once.
+The message and byte limits are rechecked at prepare and commit. A rejected
+send links no envelope, changes no mailbox gauge, and wakes no actor.
 
 ## Timers and socket ownership
 
