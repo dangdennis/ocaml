@@ -21,11 +21,67 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include "caml/actor_heap.h"
+#include "caml/actor_scheduler.h"
+#include "caml/actor_world.h"
 #include "caml/alloc.h"
 #include "caml/fail.h"
 #include "caml/memory.h"
 #include "caml/mlvalues.h"
 #include "caml/misc.h"
+
+int caml_actor_string_is_readable(value string)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+
+  if (heap == NULL) return 1;
+  if (Is_block(string) && string != 0 && Tag_val(string) == String_tag
+      && (caml_actor_heap_owns_value(heap, string)
+          || caml_actor_world_value_is_frozen(string))) {
+    return 1;
+  }
+  caml_actor_scheduler_request_unsupported();
+  return 0;
+}
+
+static int caml_actor_bytes_writable(value bytes)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+
+  if (heap == NULL) return 1;
+  if (Is_block(bytes) && bytes != 0 && Tag_val(bytes) == String_tag
+      && caml_actor_heap_owns_value(heap, bytes)) {
+    return 1;
+  }
+  caml_actor_scheduler_request_unsupported();
+  return 0;
+}
+
+value caml_actor_alloc_string(mlsize_t length)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  enum caml_actor_heap_alloc_error error;
+  mlsize_t offset_index;
+  mlsize_t wosize;
+  value result;
+
+  if (heap == NULL) return caml_alloc_string(length);
+  wosize = (length + sizeof(value)) / sizeof(value);
+  result = caml_actor_heap_try_alloc(
+    heap, wosize, String_tag, 0, &error);
+  if (result == 0) {
+    if (error == CAML_ACTOR_HEAP_ALLOC_QUOTA) {
+      caml_actor_scheduler_request_heap_exhausted();
+    } else {
+      caml_actor_scheduler_request_unsupported();
+    }
+    return 0;
+  }
+  Field(result, wosize - 1) = 0;
+  offset_index = Bsize_wsize(wosize) - 1;
+  Byte(result, offset_index) = offset_index - length;
+  return result;
+}
 
 /* returns a number of bytes (chars) */
 CAMLexport mlsize_t caml_string_length(value s)
@@ -40,6 +96,7 @@ CAMLexport mlsize_t caml_string_length(value s)
 CAMLprim value caml_ml_string_length(value s)
 {
   mlsize_t temp;
+  if (!caml_actor_string_is_readable(s)) return Val_int(0);
   temp = Bosize_val(s) - 1;
   CAMLassert (Byte (s, temp - Byte (s, temp)) == 0);
   return Val_long(temp - Byte (s, temp));
@@ -75,7 +132,7 @@ CAMLprim value caml_create_bytes(value len)
   if (size > Bsize_wsize (Max_wosize) - 1){
     caml_invalid_argument("Bytes.create");
   }
-  return caml_alloc_string(size);
+  return caml_actor_alloc_string(size);
 }
 
 
@@ -83,6 +140,7 @@ CAMLprim value caml_create_bytes(value len)
 CAMLprim value caml_string_get(value str, value index)
 {
   intnat idx = Long_val(index);
+  if (!caml_actor_string_is_readable(str)) return Val_int(0);
   if (idx < 0 || idx >= caml_string_length(str)) caml_array_bound_error();
   return Val_int(Byte_u(str, idx));
 }
@@ -95,6 +153,7 @@ CAMLprim value caml_bytes_get(value str, value index)
 CAMLprim value caml_bytes_set(value str, value index, value newval)
 {
   intnat idx = Long_val(index);
+  if (!caml_actor_bytes_writable(str)) return Val_unit;
   if (idx < 0 || idx >= caml_string_length(str)) caml_array_bound_error();
   Byte_u(str, idx) = Int_val(newval);
   return Val_unit;
@@ -276,6 +335,8 @@ CAMLprim value caml_string_equal(value s1, value s2)
   mlsize_t sz1, sz2;
   value * p1, * p2;
 
+  if (!caml_actor_string_is_readable(s1)
+      || !caml_actor_string_is_readable(s2)) return Val_false;
   if (s1 == s2) return Val_true;
   sz1 = Wosize_val(s1);
   sz2 = Wosize_val(s2);
@@ -305,6 +366,8 @@ CAMLprim value caml_string_compare(value s1, value s2)
   mlsize_t len1, len2;
   int res;
 
+  if (!caml_actor_string_is_readable(s1)
+      || !caml_actor_string_is_readable(s2)) return Val_int(0);
   if (s1 == s2) return Val_int(0);
   len1 = caml_string_length(s1);
   len2 = caml_string_length(s2);
@@ -366,6 +429,23 @@ CAMLprim value caml_bytes_greaterequal(value s1, value s2)
 CAMLprim value caml_blit_bytes(value s1, value ofs1, value s2, value ofs2,
                                 value n)
 {
+  intnat source_offset = Long_val(ofs1);
+  intnat destination_offset = Long_val(ofs2);
+  intnat length = Long_val(n);
+
+  if (caml_actor_heap_current() != NULL) {
+    if (!caml_actor_string_is_readable(s1)
+        || !caml_actor_bytes_writable(s2)) return Val_unit;
+    if (source_offset < 0 || destination_offset < 0 || length < 0
+        || (uintnat)source_offset > caml_string_length(s1)
+        || (uintnat)length
+             > caml_string_length(s1) - (uintnat)source_offset
+        || (uintnat)destination_offset > caml_string_length(s2)
+        || (uintnat)length
+             > caml_string_length(s2) - (uintnat)destination_offset) {
+      caml_array_bound_error();
+    }
+  }
   memmove(&Byte(s2, Long_val(ofs2)), &Byte(s1, Long_val(ofs1)), Long_val(n));
   return Val_unit;
 }
@@ -378,6 +458,18 @@ CAMLprim value caml_blit_string(value s1, value ofs1, value s2, value ofs2,
 
 CAMLprim value caml_fill_bytes(value s, value offset, value len, value init)
 {
+  intnat destination_offset = Long_val(offset);
+  intnat length = Long_val(len);
+
+  if (caml_actor_heap_current() != NULL) {
+    if (!caml_actor_bytes_writable(s)) return Val_unit;
+    if (destination_offset < 0 || length < 0
+        || (uintnat)destination_offset > caml_string_length(s)
+        || (uintnat)length
+             > caml_string_length(s) - (uintnat)destination_offset) {
+      caml_array_bound_error();
+    }
+  }
   memset(&Byte(s, Long_val(offset)), Int_val(init), Long_val(len));
   return Val_unit;
 }
@@ -470,10 +562,12 @@ CAMLexport value caml_alloc_sprintf(const char * format, ...)
 
 CAMLprim value caml_string_of_bytes(value bv)
 {
+  if (!caml_actor_string_is_readable(bv)) return Atom(0);
   return bv;
 }
 
 CAMLprim value caml_bytes_of_string(value bv)
 {
+  if (!caml_actor_string_is_readable(bv)) return Atom(0);
   return bv;
 }

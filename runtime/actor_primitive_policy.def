@@ -1,0 +1,151 @@
+/**************************************************************************/
+/*                                                                        */
+/*                                 OCaml                                  */
+/*                                                                        */
+/*                             Dennis Dang                                */
+/*                                                                        */
+/*   Copyright 2026 Dennis Dang                                           */
+/*                                                                        */
+/*   All rights reserved.  This file is distributed under the terms of    */
+/*   the GNU Lesser General Public License version 2.1, with the          */
+/*   special exception on linking described in the file LICENSE.          */
+/*                                                                        */
+/**************************************************************************/
+
+/* Audited bytecode-actor primitive policy.
+ *
+ * Each entry supplies name, function, arity, capability, family, and audit.
+ *
+ * This is the single reviewed source used by both the runtime fence and
+ * ocamlactorcheck. Unknown names and arities are forbidden.
+ */
+
+ACTOR_PRIMITIVE(
+  "caml_int_compare", caml_int_compare, 2, PURE, integer,
+  "Compares two tagged integers without allocation or mutation.")
+ACTOR_PRIMITIVE(
+  "caml_actor_spawn", caml_actor_spawn, 1, SCHEDULER_AWARE, actor,
+  "Copies a closure into a private heap through the scheduler.")
+ACTOR_PRIMITIVE(
+  "caml_actor_self", caml_actor_self, 1, SCHEDULER_AWARE, actor,
+  "Returns the scheduler-owned identity of the current actor.")
+ACTOR_PRIMITIVE(
+  "caml_actor_yield", caml_actor_yield, 1, SCHEDULER_AWARE, actor,
+  "Requests a scheduler yield after the primitive returns.")
+ACTOR_PRIMITIVE(
+  "caml_actor_send", caml_actor_send, 2, SCHEDULER_AWARE, actor,
+  "Commits a pointer-free mailbox message through the scheduler.")
+ACTOR_PRIMITIVE(
+  "caml_actor_receive", caml_actor_receive, 1, SCHEDULER_AWARE, actor,
+  "Receives through the scheduler-owned mailbox boundary.")
+ACTOR_PRIMITIVE(
+  "caml_actor_stats", caml_actor_stats, 1, SCHEDULER_AWARE, actor,
+  "Copies deterministic scheduler counters into the actor heap.")
+ACTOR_PRIMITIVE(
+  "caml_array_make", caml_array_make, 2, ACTOR_LOCAL, array,
+  "Allocates and initializes a new actor-owned array.")
+ACTOR_PRIMITIVE(
+  "caml_array_get_addr", caml_array_get_addr, 2, ACTOR_LOCAL, array,
+  "Reads a checked field from an actor-owned value array.")
+ACTOR_PRIMITIVE(
+  "caml_array_set_addr", caml_array_set_addr, 3, ACTOR_LOCAL, array,
+  "Writes a checked field in an actor-owned value array.")
+ACTOR_PRIMITIVE(
+  "caml_array_unsafe_get", caml_array_unsafe_get, 2, ACTOR_LOCAL, array,
+  "Reads an actor-owned value array with actor-mode bounds checks.")
+ACTOR_PRIMITIVE(
+  "caml_array_unsafe_set", caml_array_unsafe_set, 3, ACTOR_LOCAL, array,
+  "Writes an actor-owned value array with actor-mode ownership checks.")
+ACTOR_PRIMITIVE(
+  "caml_array_blit", caml_array_blit, 5, ACTOR_LOCAL, array,
+  "Copies between actor-owned arrays after validating the whole range.")
+ACTOR_PRIMITIVE(
+  "caml_array_fill", caml_array_fill, 4, ACTOR_LOCAL, array,
+  "Fills an actor-owned array after validating the value and range.")
+ACTOR_PRIMITIVE(
+  "caml_ml_string_length", caml_ml_string_length, 1, ACTOR_LOCAL, string,
+  "Reads the length of an exact actor-owned or frozen string.")
+ACTOR_PRIMITIVE(
+  "caml_ml_bytes_length", caml_ml_bytes_length, 1, ACTOR_LOCAL, string,
+  "Reads the length of exact actor-owned bytes.")
+ACTOR_PRIMITIVE(
+  "caml_create_bytes", caml_create_bytes, 1, ACTOR_LOCAL, string,
+  "Allocates bytes in the current actor heap.")
+ACTOR_PRIMITIVE(
+  "caml_string_get", caml_string_get, 2, ACTOR_LOCAL, string,
+  "Reads a checked byte from an actor-owned or frozen string.")
+ACTOR_PRIMITIVE(
+  "caml_bytes_get", caml_bytes_get, 2, ACTOR_LOCAL, string,
+  "Reads a checked byte from actor-owned bytes.")
+ACTOR_PRIMITIVE(
+  "caml_bytes_set", caml_bytes_set, 3, ACTOR_LOCAL, string,
+  "Writes one checked byte to actor-owned bytes.")
+ACTOR_PRIMITIVE(
+  "caml_string_equal", caml_string_equal, 2, ACTOR_LOCAL, string,
+  "Compares exact actor-owned or frozen string payloads for equality.")
+ACTOR_PRIMITIVE(
+  "caml_string_notequal", caml_string_notequal, 2, ACTOR_LOCAL, string,
+  "Compares exact actor-owned or frozen string payloads for inequality.")
+ACTOR_PRIMITIVE(
+  "caml_string_compare", caml_string_compare, 2, ACTOR_LOCAL, string,
+  "Orders exact actor-owned or frozen string payloads.")
+ACTOR_PRIMITIVE(
+  "caml_blit_bytes", caml_blit_bytes, 5, ACTOR_LOCAL, string,
+  "Copies a checked range into actor-owned bytes.")
+ACTOR_PRIMITIVE(
+  "caml_blit_string", caml_blit_string, 5, ACTOR_LOCAL, string,
+  "Copies a checked actor-owned or frozen string range into actor bytes.")
+ACTOR_PRIMITIVE(
+  "caml_fill_bytes", caml_fill_bytes, 4, ACTOR_LOCAL, string,
+  "Fills a checked range of actor-owned bytes.")
+ACTOR_PRIMITIVE(
+  "caml_string_of_bytes", caml_string_of_bytes, 1, ACTOR_LOCAL, string,
+  "Reuses an exact actor string block through the immutable type view.")
+ACTOR_PRIMITIVE(
+  "caml_bytes_of_string", caml_bytes_of_string, 1, ACTOR_LOCAL, string,
+  "Reuses an exact string block while actor write checks remain authoritative.")
+ACTOR_PRIMITIVE(
+  "caml_hash", caml_hash, 4, ACTOR_LOCAL, hash,
+  "Hashes bounded actor or frozen data without custom callbacks.")
+ACTOR_PRIMITIVE(
+  "caml_compare", caml_compare, 2, ACTOR_LOCAL, comparison,
+  "Orders actor-owned or frozen data without custom comparison callbacks.")
+ACTOR_PRIMITIVE(
+  "caml_equal", caml_equal, 2, ACTOR_LOCAL, comparison,
+  "Tests actor-owned or frozen data for structural equality.")
+ACTOR_PRIMITIVE(
+  "caml_notequal", caml_notequal, 2, ACTOR_LOCAL, comparison,
+  "Tests actor-owned or frozen data for structural inequality.")
+ACTOR_PRIMITIVE(
+  "caml_lessthan", caml_lessthan, 2, ACTOR_LOCAL, comparison,
+  "Compares actor-owned or frozen data without custom callbacks.")
+ACTOR_PRIMITIVE(
+  "caml_lessequal", caml_lessequal, 2, ACTOR_LOCAL, comparison,
+  "Compares actor-owned or frozen data without custom callbacks.")
+ACTOR_PRIMITIVE(
+  "caml_greaterthan", caml_greaterthan, 2, ACTOR_LOCAL, comparison,
+  "Compares actor-owned or frozen data without custom callbacks.")
+ACTOR_PRIMITIVE(
+  "caml_greaterequal", caml_greaterequal, 2, ACTOR_LOCAL, comparison,
+  "Compares actor-owned or frozen data without custom callbacks.")
+ACTOR_PRIMITIVE(
+  "caml_int_of_string", caml_int_of_string, 1, ACTOR_LOCAL, integer,
+  "Parses an exact actor-owned or frozen string into a tagged integer.")
+ACTOR_PRIMITIVE(
+  "caml_format_int", caml_format_int, 2, ACTOR_LOCAL, integer,
+  "Formats a tagged integer into a newly actor-owned string.")
+ACTOR_PRIMITIVE(
+  "caml_add_float", caml_add_float, 2, ACTOR_LOCAL, float,
+  "Adds exact actor-owned or frozen floats into a new actor-owned float.")
+ACTOR_PRIMITIVE(
+  "caml_eq_float", caml_eq_float, 2, ACTOR_LOCAL, float,
+  "Compares exact actor-owned or frozen floats for equality.")
+ACTOR_PRIMITIVE(
+  "caml_format_float", caml_format_float, 2, ACTOR_LOCAL, float,
+  "Formats an exact float with a frozen format into an actor-owned string.")
+ACTOR_PRIMITIVE(
+  "caml_float_compare", caml_float_compare, 2, ACTOR_LOCAL, float,
+  "Orders exact actor-owned or frozen floats without allocation.")
+ACTOR_PRIMITIVE(
+  "caml_sys_get_config", CAML_ACTOR_NO_PRIMITIVE, 1, FORBIDDEN, system,
+  "Reads process-global configuration outside actor ownership.")

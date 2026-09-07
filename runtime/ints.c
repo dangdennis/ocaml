@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "caml/actor_heap.h"
 #include "caml/alloc.h"
 #include "caml/custom.h"
 #include "caml/fail.h"
@@ -136,7 +137,8 @@ CAMLprim value caml_int_compare(value v1, value v2)
 
 CAMLprim value caml_int_of_string(value s)
 {
-    return Val_long(parse_intnat(s, 8 * sizeof(value) - 1, INT_ERRMSG));
+  if (!caml_actor_string_is_readable(s)) return Val_int(0);
+  return Val_long(parse_intnat(s, 8 * sizeof(value) - 1, INT_ERRMSG));
 }
 
 #define FORMAT_BUFFER_SIZE 32
@@ -170,10 +172,31 @@ static char parse_format(value fmt,
 CAMLprim value caml_format_int(value fmt, value arg)
 {
   char format_string[FORMAT_BUFFER_SIZE];
+  char buffer[FORMAT_BUFFER_SIZE];
   char conv;
+  int length;
   value res;
 
+  if (!caml_actor_string_is_readable(fmt)) return Atom(0);
   conv = parse_format(fmt, ARCH_INTNAT_PRINTF_FORMAT, format_string);
+  if (caml_actor_heap_current() != NULL) {
+    switch (conv) {
+    case 'u': case 'x': case 'X': case 'o':
+      length = snprintf(
+        buffer, sizeof(buffer), format_string, Unsigned_long_val(arg));
+      break;
+    default:
+      length = snprintf(buffer, sizeof(buffer), format_string, Long_val(arg));
+      break;
+    }
+    if (length < 0 || (size_t)length >= sizeof(buffer)) {
+      caml_invalid_argument("format_int: result too long");
+    }
+    res = caml_actor_alloc_string((mlsize_t)length);
+    if (res == 0) return Atom(0);
+    memcpy((char *)String_val(res), buffer, (size_t)length);
+    return res;
+  }
   switch (conv) {
   case 'u': case 'x': case 'X': case 'o':
     res = caml_alloc_sprintf(format_string, Unsigned_long_val(arg));

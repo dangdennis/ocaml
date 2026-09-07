@@ -17,6 +17,9 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include "caml/actor_heap.h"
+#include "caml/actor_scheduler.h"
+#include "caml/actor_world.h"
 #include "caml/custom.h"
 #include "caml/fail.h"
 #include "caml/memory.h"
@@ -121,6 +124,30 @@ static void run_pending_actions(struct compare_stack* stk,
 #define GREATER 1
 #define UNORDERED CAML_INTNAT_MIN
 
+static int caml_actor_compare_value_readable(value candidate)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  uintnat atom_tag;
+  tag_t tag;
+
+  if (heap == NULL || Is_long(candidate)) return 1;
+  for (atom_tag = 0; atom_tag < Num_tags; atom_tag++) {
+    if (candidate == Atom((tag_t)atom_tag)) return 1;
+  }
+  if ((!caml_actor_heap_owns_value(heap, candidate)
+       && !caml_actor_world_value_is_frozen(candidate))) {
+    caml_actor_scheduler_request_unsupported();
+    return 0;
+  }
+  tag = Tag_val(candidate);
+  if (tag < Forcing_tag || tag == String_tag || tag == Double_tag
+      || tag == Double_array_tag) {
+    return 1;
+  }
+  caml_actor_scheduler_request_unsupported();
+  return 0;
+}
+
 /* The return value of compare_val is as follows:
       > 0                 v1 is greater than v2
       0                   v1 is equal to v2
@@ -138,6 +165,8 @@ static intnat do_compare_val(struct compare_stack* stk,
   while (1) {
     poll_timer = COMPARE_POLL_PERIOD;
     while (--poll_timer > 0) {
+      if (!caml_actor_compare_value_readable(v1)
+          || !caml_actor_compare_value_readable(v2)) return EQUAL;
       if (v1 == v2 && total) goto next_item;
       if (Is_long(v1)) {
         if (v1 == v2) goto next_item;
