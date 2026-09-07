@@ -14,6 +14,7 @@
 
 #define CAML_INTERNALS
 
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,7 @@
 #include "caml/actor_scheduler.h"
 #include "caml/actor_wire.h"
 #include "caml/actor_world.h"
+#include "caml/backtrace_prim.h"
 #include "caml/callback.h"
 #include "caml/codefrag.h"
 #include "caml/debugger.h"
@@ -33,6 +35,7 @@
 #include "caml/interp.h"
 #include "caml/misc.h"
 #include "caml/prims.h"
+#include "caml/printexc.h"
 #include "caml/signals.h"
 
 #define ACTOR_SLOT_NONE UINT32_MAX
@@ -126,6 +129,10 @@ struct caml_actor_slot {
   uintnat dispatches;
   uintnat reduction_stops;
   struct caml_actor_unsupported unsupported;
+  char failure_summary[CAML_ACTOR_EXIT_SUMMARY_BYTES];
+  backtrace_slot failure_backtrace_slots[CAML_ACTOR_BACKTRACE_SLOTS];
+  uintnat failure_backtrace_pos;
+  int failure_backtrace_truncated;
   uint32_t ready_next;
   int queued;
   struct stack_info *stack;
@@ -147,6 +154,7 @@ struct caml_actor_scheduler {
   mlsize_t message_quota_words;
   uintnat mailbox_message_limit;
   uintnat mailbox_byte_limit;
+  uintnat monitor_limit;
   struct caml_actor_slot *slots;
   uint32_t ready_head;
   uint32_t ready_tail;
@@ -166,6 +174,12 @@ struct caml_actor_scheduler {
   uintnat mailbox_messages;
   uintnat mailbox_bytes;
   uintnat mailbox_quota_failures;
+  uintnat monitor_count;
+  uintnat peak_monitor_count;
+  uintnat monitor_quota_failures;
+
+  uintnat next_monitor_id;
+  struct caml_actor_monitor *monitors;
 
   struct stack_info *host_stack;
   int64_t host_stack_id;
@@ -196,6 +210,15 @@ struct caml_actor_prepared_send {
   struct caml_actor_prepared_send *next;
 };
 
+struct caml_actor_monitor {
+  uintnat id;
+  uintnat watcher_pid;
+  uintnat target_pid;
+  int ready;
+  struct caml_actor_exit_reason reason;
+  struct caml_actor_monitor *next;
+};
+
 static void add_counter(uintnat *counter, uintnat amount)
 {
   if (amount > CAML_UINTNAT_MAX - *counter) {
@@ -208,6 +231,52 @@ static void add_counter(uintnat *counter, uintnat amount)
 static void increment_counter(uintnat *counter)
 {
   add_counter(counter, 1);
+}
+
+static size_t valid_utf8_prefix(const char *text, size_t length)
+{
+  size_t offset = 0;
+
+  while (offset < length) {
+    unsigned char lead = (unsigned char)text[offset];
+    size_t width;
+
+    if (lead < 0x80) {
+      offset++;
+      continue;
+    }
+    if (lead >= 0xc2 && lead <= 0xdf) width = 2;
+    else if (lead >= 0xe0 && lead <= 0xef) width = 3;
+    else if (lead >= 0xf0 && lead <= 0xf4) width = 4;
+    else break;
+    if (width > length - offset) break;
+    for (size_t index = 1; index < width; index++) {
+      if (((unsigned char)text[offset + index] & 0xc0) != 0x80) {
+        return offset;
+      }
+    }
+    if ((lead == 0xe0 && (unsigned char)text[offset + 1] < 0xa0)
+        || (lead == 0xed && (unsigned char)text[offset + 1] > 0x9f)
+        || (lead == 0xf0 && (unsigned char)text[offset + 1] < 0x90)
+        || (lead == 0xf4 && (unsigned char)text[offset + 1] > 0x8f)) {
+      break;
+    }
+    offset += width;
+  }
+  return offset;
+}
+
+static void copy_bounded_utf8(char *destination, size_t capacity,
+                              const char *source)
+{
+  size_t length;
+
+  CAMLassert(destination != NULL && capacity > 0 && source != NULL);
+  length = strlen(source);
+  if (length >= capacity) length = capacity - 1;
+  length = valid_utf8_prefix(source, length);
+  memcpy(destination, source, length);
+  destination[length] = '\0';
 }
 
 static int scheduler_runtime_supported(void)
@@ -394,6 +463,25 @@ static uint32_t dequeue_head(struct caml_actor_scheduler *scheduler)
   return index;
 }
 
+static int remove_ready(struct caml_actor_scheduler *scheduler,
+                        uint32_t index)
+{
+  uint32_t *link = &scheduler->ready_head;
+  uint32_t previous = ACTOR_SLOT_NONE;
+  struct caml_actor_slot *slot = &scheduler->slots[index];
+
+  while (*link != ACTOR_SLOT_NONE && *link != index) {
+    previous = *link;
+    link = &scheduler->slots[*link].ready_next;
+  }
+  if (*link == ACTOR_SLOT_NONE) return 0;
+  *link = slot->ready_next;
+  if (scheduler->ready_tail == index) scheduler->ready_tail = previous;
+  slot->ready_next = ACTOR_SLOT_NONE;
+  slot->queued = 0;
+  return 1;
+}
+
 static void release_slot_resources(struct caml_actor_slot *slot)
 {
   struct caml_actor_prepared_send *message = slot->mailbox_head;
@@ -465,13 +553,29 @@ static int scheduler_mailboxes_valid(
     && total_messages <= scheduler->mailbox_message_limit
     && total_bytes <= scheduler->mailbox_byte_limit;
 }
+
+static int scheduler_monitors_valid(
+  const struct caml_actor_scheduler *scheduler)
+{
+  uintnat count = 0;
+
+  for (const struct caml_actor_monitor *monitor = scheduler->monitors;
+       monitor != NULL; monitor = monitor->next) {
+    if (monitor->id == 0 || count == CAML_UINTNAT_MAX) return 0;
+    count++;
+  }
+  return count == scheduler->monitor_count
+    && count <= scheduler->monitor_limit
+    && scheduler->peak_monitor_count >= count
+    && scheduler->peak_monitor_count <= scheduler->monitor_limit;
+}
 #endif
 
 struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   uintnat capacity, uintnat reduction_budget,
   mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words,
   mlsize_t message_quota_words, uintnat mailbox_message_limit,
-  uintnat mailbox_byte_limit)
+  uintnat mailbox_byte_limit, uintnat monitor_limit)
 {
   caml_domain_state *domain = Caml_state_opt;
   struct caml_actor_scheduler *scheduler;
@@ -487,6 +591,7 @@ struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
       || child_initial_heap_words > child_maximum_heap_words
       || message_quota_words == 0
       || mailbox_message_limit == 0 || mailbox_byte_limit == 0
+      || monitor_limit == 0
       || capacity > SIZE_MAX / sizeof(*slots)) {
     return NULL;
   }
@@ -508,10 +613,12 @@ struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   scheduler->message_quota_words = message_quota_words;
   scheduler->mailbox_message_limit = mailbox_message_limit;
   scheduler->mailbox_byte_limit = mailbox_byte_limit;
+  scheduler->monitor_limit = monitor_limit;
   scheduler->slots = slots;
   scheduler->ready_head = ACTOR_SLOT_NONE;
   scheduler->ready_tail = ACTOR_SLOT_NONE;
   scheduler->current = ACTOR_SLOT_NONE;
+  scheduler->next_monitor_id = 1;
   scheduler->host_stack = domain->current_stack;
   scheduler->host_stack_id = domain->current_stack->id;
   scheduler->host_external_raise = domain->external_raise;
@@ -536,11 +643,13 @@ struct caml_actor_scheduler *caml_actor_scheduler_create(
 {
   return caml_actor_scheduler_create_configured(
     capacity, reduction_budget, 1, 1, 1,
-    CAML_UINTNAT_MAX, CAML_UINTNAT_MAX);
+    CAML_UINTNAT_MAX, CAML_UINTNAT_MAX, CAML_UINTNAT_MAX);
 }
 
 void caml_actor_scheduler_destroy(struct caml_actor_scheduler *scheduler)
 {
+  struct caml_actor_monitor *monitor;
+
   if (scheduler == NULL) return;
   if (!refresh_host_context(scheduler)) {
     caml_fatal_error("actor scheduler destroyed outside its host context");
@@ -552,6 +661,16 @@ void caml_actor_scheduler_destroy(struct caml_actor_scheduler *scheduler)
     scheduler->slots[index].queued = 0;
     release_slot_resources(&scheduler->slots[index]);
   }
+  monitor = scheduler->monitors;
+  while (monitor != NULL) {
+    struct caml_actor_monitor *next = monitor->next;
+
+    CAMLassert(scheduler->monitor_count > 0);
+    scheduler->monitor_count--;
+    free(monitor);
+    monitor = next;
+  }
+  CAMLassert(scheduler->monitor_count == 0);
   scheduler->domain->actor_scheduler = NULL;
   free(scheduler->slots);
   free(scheduler);
@@ -915,6 +1034,22 @@ int caml_actor_scheduler_commit_prepared(
   return 1;
 }
 
+static void capture_exception_summary(struct caml_actor_slot *slot,
+                                      value exception)
+{
+  char *formatted;
+
+  copy_bounded_utf8(slot->failure_summary, sizeof(slot->failure_summary),
+                    "uncaught actor exception");
+  if (!Is_block(exception)
+      || !caml_actor_heap_owns_value(slot->heap, exception)) return;
+  formatted = caml_format_exception(exception);
+  if (formatted == NULL) return;
+  copy_bounded_utf8(
+    slot->failure_summary, sizeof(slot->failure_summary), formatted);
+  caml_stat_free(formatted);
+}
+
 struct caml_actor_step caml_actor_scheduler_step(
   struct caml_actor_scheduler *scheduler)
 {
@@ -936,6 +1071,16 @@ struct caml_actor_step caml_actor_scheduler_step(
     step.reason = CAML_ACTOR_STEP_HOST_ACTION;
     return step;
   }
+  for (uint32_t pending = 0; pending < scheduler->capacity; pending++) {
+    const struct caml_actor_slot *candidate = &scheduler->slots[pending];
+
+    if (candidate->lifecycle == CAML_ACTOR_LIFECYCLE_FAILED
+        && candidate->failure == CAML_ACTOR_FAILURE_CANCELLED) {
+      step.pid = candidate->pid;
+      step.reason = CAML_ACTOR_STEP_FAILED;
+      return step;
+    }
+  }
   index = dequeue_head(scheduler);
   if (index == ACTOR_SLOT_NONE) return step;
   slot = &scheduler->slots[index];
@@ -950,7 +1095,9 @@ struct caml_actor_step caml_actor_scheduler_step(
   CAMLassert(scheduler->control_request == CAML_ACTOR_CONTROL_NONE);
   domain->current_stack = slot->stack;
   domain->local_roots = NULL;
-  domain->backtrace_active = 0;
+  domain->backtrace_active = 1;
+  slot->failure_backtrace_pos = 0;
+  slot->failure_backtrace_truncated = 0;
   domain->trap_barrier_off = 0;
   domain->trap_barrier_block = INT64_MIN;
 
@@ -1049,6 +1196,7 @@ struct caml_actor_step caml_actor_scheduler_step(
     case CAML_BYTECODE_STOP_EXCEPTION:
       slot->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
       slot->failure = CAML_ACTOR_FAILURE_EXCEPTION;
+      capture_exception_summary(slot, result);
       increment_counter(&scheduler->total_failed);
       step.reason = CAML_ACTOR_STEP_FAILED;
       break;
@@ -1281,6 +1429,149 @@ int caml_actor_scheduler_consume_current_message(
   return 1;
 }
 
+enum caml_actor_monitor_status caml_actor_scheduler_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat target_pid,
+  uintnat *monitor_id)
+{
+  const struct caml_actor_slot *target;
+  struct caml_actor_monitor *monitor;
+  enum caml_actor_pid_lookup lookup;
+
+  if (monitor_id != NULL) *monitor_id = 0;
+  if (!running_context_matches(scheduler) || monitor_id == NULL) {
+    return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+  }
+  lookup = lookup_slot(scheduler, target_pid, &target);
+  if (lookup == CAML_ACTOR_PID_STALE) return CAML_ACTOR_MONITOR_STALE;
+  if (lookup != CAML_ACTOR_PID_PRESENT || !slot_accepts_messages(target)) {
+    return CAML_ACTOR_MONITOR_MISSING;
+  }
+  if (scheduler->next_monitor_id == 0
+      || scheduler->next_monitor_id > (uintnat)Max_long) {
+    return CAML_ACTOR_MONITOR_RESOURCE_UNAVAILABLE;
+  }
+  if (scheduler->monitor_count >= scheduler->monitor_limit) {
+    increment_counter(&scheduler->monitor_quota_failures);
+    return CAML_ACTOR_MONITOR_LIMIT;
+  }
+  monitor = calloc(1, sizeof(*monitor));
+  if (monitor == NULL) return CAML_ACTOR_MONITOR_RESOURCE_UNAVAILABLE;
+  monitor->id = scheduler->next_monitor_id++;
+  monitor->watcher_pid = scheduler->slots[scheduler->current].pid;
+  monitor->target_pid = target_pid;
+  monitor->next = scheduler->monitors;
+  scheduler->monitors = monitor;
+  increment_counter(&scheduler->monitor_count);
+  if (scheduler->monitor_count > scheduler->peak_monitor_count) {
+    scheduler->peak_monitor_count = scheduler->monitor_count;
+  }
+#ifdef DEBUG
+  CAMLassert(scheduler_monitors_valid(scheduler));
+#endif
+  *monitor_id = monitor->id;
+  return CAML_ACTOR_MONITOR_OK;
+}
+
+static struct caml_actor_monitor **find_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id,
+  uintnat watcher_pid)
+{
+  struct caml_actor_monitor **link = &scheduler->monitors;
+
+  while (*link != NULL) {
+    if ((*link)->id == monitor_id
+        && (*link)->watcher_pid == watcher_pid) return link;
+    link = &(*link)->next;
+  }
+  return NULL;
+}
+
+enum caml_actor_monitor_status caml_actor_scheduler_peek_exit(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id,
+  struct caml_actor_exit_reason *reason)
+{
+  struct caml_actor_monitor **link;
+  uintnat watcher_pid;
+
+  if (!running_context_matches(scheduler) || reason == NULL) {
+    return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+  }
+  watcher_pid = scheduler->slots[scheduler->current].pid;
+  link = find_monitor(scheduler, monitor_id, watcher_pid);
+  if (link == NULL) return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+  if (!(*link)->ready) return CAML_ACTOR_MONITOR_PENDING;
+  *reason = (*link)->reason;
+  return CAML_ACTOR_MONITOR_READY;
+}
+
+static int remove_monitor(struct caml_actor_scheduler *scheduler,
+                          uintnat monitor_id, uintnat watcher_pid)
+{
+  struct caml_actor_monitor **link =
+    find_monitor(scheduler, monitor_id, watcher_pid);
+  struct caml_actor_monitor *monitor;
+
+  if (link == NULL) return 0;
+  monitor = *link;
+  *link = monitor->next;
+  CAMLassert(scheduler->monitor_count > 0);
+  scheduler->monitor_count--;
+  free(monitor);
+#ifdef DEBUG
+  CAMLassert(scheduler_monitors_valid(scheduler));
+#endif
+  return 1;
+}
+
+int caml_actor_scheduler_consume_exit(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id)
+{
+  struct caml_actor_monitor **link;
+  uintnat watcher_pid;
+
+  if (!running_context_matches(scheduler)) return 0;
+  watcher_pid = scheduler->slots[scheduler->current].pid;
+  link = find_monitor(scheduler, monitor_id, watcher_pid);
+  if (link == NULL || !(*link)->ready) return 0;
+  return remove_monitor(scheduler, monitor_id, watcher_pid);
+}
+
+int caml_actor_scheduler_discard_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id)
+{
+  if (!running_context_matches(scheduler)) return 0;
+  return remove_monitor(
+    scheduler, monitor_id, scheduler->slots[scheduler->current].pid);
+}
+
+enum caml_actor_monitor_status caml_actor_scheduler_cancel(
+  struct caml_actor_scheduler *scheduler, uintnat target_pid)
+{
+  const struct caml_actor_slot *target;
+  struct caml_actor_slot *mutable_target;
+  enum caml_actor_pid_lookup lookup;
+  uint32_t index;
+
+  if (!running_context_matches(scheduler)) {
+    return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+  }
+  lookup = lookup_slot(scheduler, target_pid, &target);
+  if (lookup == CAML_ACTOR_PID_STALE) return CAML_ACTOR_MONITOR_STALE;
+  if (lookup != CAML_ACTOR_PID_PRESENT || !slot_accepts_messages(target)) {
+    return CAML_ACTOR_MONITOR_MISSING;
+  }
+  index = (uint32_t)(target_pid & CAML_ACTOR_PID_INDEX_MASK);
+  if (index == scheduler->current) return CAML_ACTOR_MONITOR_SELF;
+  mutable_target = &scheduler->slots[index];
+  if (mutable_target->queued && !remove_ready(scheduler, index)) {
+    return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+  }
+  mutable_target->lifecycle = CAML_ACTOR_LIFECYCLE_FAILED;
+  mutable_target->failure = CAML_ACTOR_FAILURE_CANCELLED;
+  increment_counter(&scheduler->total_failed);
+  return CAML_ACTOR_MONITOR_OK;
+}
+
 enum caml_actor_pid_lookup caml_actor_scheduler_snapshot(
   const struct caml_actor_scheduler *scheduler, uintnat pid,
   struct caml_actor_snapshot *snapshot)
@@ -1335,6 +1626,10 @@ int caml_actor_scheduler_stats(
   stats->message_word_limit = scheduler->message_quota_words;
   stats->mailbox_message_limit = scheduler->mailbox_message_limit;
   stats->mailbox_byte_limit = scheduler->mailbox_byte_limit;
+  stats->monitors = scheduler->monitor_count;
+  stats->peak_monitors = scheduler->peak_monitor_count;
+  stats->monitor_quota_failures = scheduler->monitor_quota_failures;
+  stats->monitor_limit = scheduler->monitor_limit;
 
   for (uintnat index = 0; index < scheduler->capacity; index++) {
     const struct caml_actor_slot *slot = &scheduler->slots[index];
@@ -1356,6 +1651,152 @@ int caml_actor_scheduler_stats(
   return 1;
 }
 
+static void append_backtrace_line(struct caml_actor_exit_reason *reason,
+                                  const char *line)
+{
+  size_t used = strlen(reason->backtrace);
+  size_t available = sizeof(reason->backtrace) - used;
+  int written;
+
+  if (available <= 1) {
+    reason->backtrace_truncated = 1;
+    return;
+  }
+  written = snprintf(reason->backtrace + used, available, "%s", line);
+  if (written < 0 || (size_t)written >= available) {
+    size_t valid = valid_utf8_prefix(
+      reason->backtrace, strlen(reason->backtrace));
+
+    reason->backtrace[valid] = '\0';
+    reason->backtrace_truncated = 1;
+  }
+}
+
+static void format_failure_backtrace(
+  struct caml_actor_exit_reason *reason,
+  const struct caml_actor_slot *slot)
+{
+  int output_index = 0;
+
+  reason->backtrace_truncated = slot->failure_backtrace_truncated;
+  for (uintnat index = 0; index < slot->failure_backtrace_pos; index++) {
+    debuginfo info =
+      caml_debuginfo_extract(slot->failure_backtrace_slots[index]);
+
+    for (; info != NULL; info = caml_debuginfo_next(info)) {
+      struct caml_loc_info location;
+      const char *prefix;
+      char line[1024];
+      int written;
+
+      caml_debuginfo_location(info, &location);
+      if (!location.loc_valid) continue;
+      if (location.loc_is_raise) {
+        prefix = output_index == 0 ? "Raised at" : "Re-raised at";
+      } else {
+        prefix = output_index == 0
+          ? "Raised by primitive operation at" : "Called from";
+      }
+      written = snprintf(
+        line, sizeof(line), "%s %s in file \"%s\", line %d, "
+        "characters %d-%d%s\n", prefix, location.loc_defname,
+        location.loc_filename, location.loc_start_lnum,
+        location.loc_start_chr, location.loc_end_chr,
+        location.loc_is_inlined ? " (inlined)" : "");
+      if (written < 0 || (size_t)written >= sizeof(line)) {
+        line[valid_utf8_prefix(line, strlen(line))] = '\0';
+        reason->backtrace_truncated = 1;
+      }
+      append_backtrace_line(reason, line);
+      output_index++;
+    }
+  }
+}
+
+static struct caml_actor_exit_reason exit_reason_for_slot(
+  const struct caml_actor_slot *slot)
+{
+  struct caml_actor_exit_reason reason;
+
+  memset(&reason, 0, sizeof(reason));
+  if (slot->lifecycle == CAML_ACTOR_LIFECYCLE_EXITED) {
+    reason.kind = CAML_ACTOR_EXIT_NORMAL;
+    return reason;
+  }
+  switch (slot->failure) {
+  case CAML_ACTOR_FAILURE_EXCEPTION:
+    reason.kind = CAML_ACTOR_EXIT_EXCEPTION;
+    copy_bounded_utf8(reason.summary, sizeof(reason.summary),
+                      slot->failure_summary[0] == '\0'
+                        ? "uncaught actor exception"
+                        : slot->failure_summary);
+    format_failure_backtrace(&reason, slot);
+    break;
+  case CAML_ACTOR_FAILURE_HEAP_EXHAUSTED:
+    reason.kind = CAML_ACTOR_EXIT_HEAP_LIMIT;
+    break;
+  case CAML_ACTOR_FAILURE_CANCELLED:
+    reason.kind = CAML_ACTOR_EXIT_CANCELLED;
+    break;
+  case CAML_ACTOR_FAILURE_UNSUPPORTED:
+    reason.kind = CAML_ACTOR_EXIT_UNSUPPORTED;
+    reason.unsupported = slot->unsupported;
+    break;
+  default:
+    reason.kind = CAML_ACTOR_EXIT_RUNTIME_FAILURE;
+    break;
+  }
+  return reason;
+}
+
+static void publish_exit_to_monitors(
+  struct caml_actor_scheduler *scheduler,
+  const struct caml_actor_slot *target)
+{
+  struct caml_actor_exit_reason reason = exit_reason_for_slot(target);
+
+  for (struct caml_actor_monitor *monitor = scheduler->monitors;
+       monitor != NULL; monitor = monitor->next) {
+    const struct caml_actor_slot *watcher;
+
+    if (monitor->target_pid != target->pid || monitor->ready) continue;
+    monitor->reason = reason;
+    monitor->ready = 1;
+    if (lookup_slot(scheduler, monitor->watcher_pid, &watcher)
+          == CAML_ACTOR_PID_PRESENT
+        && watcher->lifecycle == CAML_ACTOR_LIFECYCLE_BLOCKED) {
+      uint32_t index =
+        (uint32_t)(monitor->watcher_pid & CAML_ACTOR_PID_INDEX_MASK);
+      struct caml_actor_slot *mutable_watcher = &scheduler->slots[index];
+
+      mutable_watcher->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNABLE;
+      enqueue_tail(scheduler, index);
+    }
+  }
+}
+
+static void discard_watcher_monitors(
+  struct caml_actor_scheduler *scheduler, uintnat watcher_pid)
+{
+  struct caml_actor_monitor **link = &scheduler->monitors;
+
+  while (*link != NULL) {
+    struct caml_actor_monitor *monitor = *link;
+
+    if (monitor->watcher_pid != watcher_pid) {
+      link = &monitor->next;
+      continue;
+    }
+    *link = monitor->next;
+    CAMLassert(scheduler->monitor_count > 0);
+    scheduler->monitor_count--;
+    free(monitor);
+  }
+#ifdef DEBUG
+  CAMLassert(scheduler_monitors_valid(scheduler));
+#endif
+}
+
 int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,
                                 uintnat pid)
 {
@@ -1375,6 +1816,8 @@ int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,
   index = (uint32_t)(pid & CAML_ACTOR_PID_INDEX_MASK);
   slot = &scheduler->slots[index];
   CAMLassert(!slot->queued);
+  publish_exit_to_monitors(scheduler, slot);
+  discard_watcher_monitors(scheduler, pid);
   CAMLassert(scheduler->mailbox_messages >= slot->mailbox_length);
   CAMLassert(scheduler->mailbox_bytes >= slot->mailbox_bytes);
   add_counter(&scheduler->messages_dropped, slot->mailbox_length);
@@ -1386,6 +1829,11 @@ int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,
   slot->dispatches = 0;
   slot->reduction_stops = 0;
   memset(&slot->unsupported, 0, sizeof(slot->unsupported));
+  memset(slot->failure_summary, 0, sizeof(slot->failure_summary));
+  memset(slot->failure_backtrace_slots, 0,
+         sizeof(slot->failure_backtrace_slots));
+  slot->failure_backtrace_pos = 0;
+  slot->failure_backtrace_truncated = 0;
   slot->ready_next = ACTOR_SLOT_NONE;
   if (index == 0 || slot->generation >= max_pid_generation()) {
     slot->lifecycle = CAML_ACTOR_LIFECYCLE_RETIRED;
@@ -1424,6 +1872,37 @@ uintnat caml_actor_scheduler_current_pid(void)
   scheduler = domain->actor_scheduler;
   if (!running_context_matches(scheduler)) return 0;
   return scheduler->slots[scheduler->current].pid;
+}
+
+void caml_actor_scheduler_reset_backtrace(void)
+{
+  caml_domain_state *domain = Caml_state_opt;
+  struct caml_actor_scheduler *scheduler;
+  struct caml_actor_slot *slot;
+
+  if (domain == NULL || domain->actor_scheduler == NULL) return;
+  scheduler = domain->actor_scheduler;
+  if (!current_actor_context_matches(scheduler)) return;
+  slot = &scheduler->slots[scheduler->current];
+  slot->failure_backtrace_pos = 0;
+  slot->failure_backtrace_truncated = 0;
+}
+
+void caml_actor_scheduler_record_backtrace_slot(backtrace_slot frame)
+{
+  caml_domain_state *domain = Caml_state_opt;
+  struct caml_actor_scheduler *scheduler;
+  struct caml_actor_slot *slot;
+
+  if (domain == NULL || domain->actor_scheduler == NULL) return;
+  scheduler = domain->actor_scheduler;
+  if (!current_actor_context_matches(scheduler)) return;
+  slot = &scheduler->slots[scheduler->current];
+  if (slot->failure_backtrace_pos >= CAML_ACTOR_BACKTRACE_SLOTS) {
+    slot->failure_backtrace_truncated = 1;
+    return;
+  }
+  slot->failure_backtrace_slots[slot->failure_backtrace_pos++] = frame;
 }
 
 static int request_control(enum caml_actor_control_request request)
@@ -1667,6 +2146,50 @@ int caml_actor_scheduler_consume_current_message(
   return 0;
 }
 
+enum caml_actor_monitor_status caml_actor_scheduler_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat target_pid,
+  uintnat *monitor_id)
+{
+  (void)scheduler;
+  (void)target_pid;
+  if (monitor_id != NULL) *monitor_id = 0;
+  return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+}
+
+enum caml_actor_monitor_status caml_actor_scheduler_peek_exit(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id,
+  struct caml_actor_exit_reason *reason)
+{
+  (void)scheduler;
+  (void)monitor_id;
+  (void)reason;
+  return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+}
+
+enum caml_actor_monitor_status caml_actor_scheduler_cancel(
+  struct caml_actor_scheduler *scheduler, uintnat target_pid)
+{
+  (void)scheduler;
+  (void)target_pid;
+  return CAML_ACTOR_MONITOR_INVALID_CONTEXT;
+}
+
+int caml_actor_scheduler_consume_exit(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id)
+{
+  (void)scheduler;
+  (void)monitor_id;
+  return 0;
+}
+
+int caml_actor_scheduler_discard_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id)
+{
+  (void)scheduler;
+  (void)monitor_id;
+  return 0;
+}
+
 struct caml_actor_step caml_actor_scheduler_step(
   struct caml_actor_scheduler *scheduler)
 {
@@ -1716,6 +2239,15 @@ int caml_actor_scheduler_is_running(void)
 uintnat caml_actor_scheduler_current_pid(void)
 {
   return 0;
+}
+
+void caml_actor_scheduler_reset_backtrace(void)
+{
+}
+
+void caml_actor_scheduler_record_backtrace_slot(backtrace_slot frame)
+{
+  (void)frame;
 }
 
 int caml_actor_scheduler_request_yield(void)

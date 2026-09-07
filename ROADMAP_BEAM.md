@@ -57,6 +57,7 @@ part of the current roadmap.
 | Layer 9: frozen global reads | `actor-real/09-frozen-global-reads`, PR #12 | Published draft and Layer 10 base |
 | Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | Complete and published as a stacked draft |
 | Layer 11: elastic heaps and configurable limits | `actor-real/11-elastic-heaps`, PR #14 | Complete and published as a stacked draft |
+| Layer 12: structured exits and monitors | `actor-real/12-structured-exits`, PR #15 | Complete and published as a stacked draft |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -282,6 +283,62 @@ Required cases include normal exit, uncaught exception, heap or mailbox quota,
 unsupported operation, killed actor, and scheduler/resource failures. Monitor
 delivery must tolerate stale PIDs and races without reviving identities or
 leaking actor-owned data.
+
+### Design boundary
+
+Monitor records are scheduler-owned and contain only generation-tagged
+integer identities and bounded pointer-free exit metadata. Exit publication
+happens before target retirement destroys the actor heap or advances its PID
+generation. `await_exit` allocates the public reason only in the waiting
+actor's heap and never consumes or reorders its typed FIFO mailbox.
+
+Recoverable mailbox quota rejection remains a `send` error and does not kill
+the caller. `Mailbox_limit` is reserved until an actor-fatal mailbox condition
+has an explicit executable contract. Links, trap exits, selective receive,
+supervision, timers, and general wait sets remain outside this layer.
+
+### Work sequence
+
+1. Add generation-safe monitor registration and pointer-free exit records.
+2. Deliver normal and existing contained failure reasons exactly once through
+   a dedicated scheduler control boundary.
+3. Capture bounded exception summaries and bytecode backtrace text before
+   target heap retirement.
+4. Add explicit actor cancellation without links or asynchronous user values.
+5. Bound monitor resources, expose deterministic counters, and stress cleanup
+   and PID reuse.
+6. Re-run the full Layer 11 compatibility, sanitizer, benchmark, package, and
+   fresh-runner gates before publishing the completed layer.
+
+### Milestone tracker
+
+- [x] Add the public structured reason, monitor, and `await_exit` contract.
+- [x] Register generation-safe scheduler-owned monitors without new primitive
+      names or foreign-heap reads.
+- [x] Deliver normal, exception, heap-limit, and unsupported-operation exits
+      exactly once without touching typed user mailboxes.
+- [x] Capture bounded exception summaries and bytecode backtraces with explicit
+      truncation metadata.
+- [x] Add explicit cancellation and the `Cancelled` exit reason.
+- [x] Bound monitor resources and expose deterministic observability.
+- [x] Pass race, cleanup, PID-reuse, sanitizer, package, benchmark, hygiene,
+      and fresh-runner gates and publish the stacked Layer 12 draft.
+
+### Validation checkpoint
+
+Layer 12 closed at implementation tip `ec426ba24b`. The local normal, debug,
+and instrumented actor suites each passed 27 tests with one expected platform
+skip. The tooling suites, benchmark smoke, pinned Astring package canary, and
+relevant callback, backtrace, and effects suites passed. Fresh-runner Actor
+Runtime (`33889703717`), Hygiene (`33889703619`), full Build (`33889703777`),
+and MSVC (`33889703695`) workflows passed at that exact tip: 35 checks passed
+and eight platform- or event-specific checks skipped as expected.
+
+### Current next action
+
+Begin Layer 13 with a red one-for-one supervision contract built only on the
+published monitor and cancellation boundaries. Keep restart ordering and
+resource limits explicit; do not add links or trap-exit semantics implicitly.
 
 ## Layer 13: supervision
 
