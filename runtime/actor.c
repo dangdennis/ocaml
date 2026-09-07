@@ -48,6 +48,18 @@ enum actor_run_outcome {
   ACTOR_RUN_DEADLOCK
 };
 
+static const char *actor_run_outcome_name(enum actor_run_outcome outcome)
+{
+  switch (outcome) {
+  case ACTOR_RUN_OK: return "ok";
+  case ACTOR_RUN_UNSUPPORTED: return "unsupported_runtime";
+  case ACTOR_RUN_ROOT_FAILED: return "root_failed";
+  case ACTOR_RUN_ROOT_HEAP_EXHAUSTED: return "root_heap_exhausted";
+  case ACTOR_RUN_DEADLOCK: return "deadlock";
+  }
+  return "unknown";
+}
+
 #if !defined(NATIVE_CODE)
 
 static value actor_try_alloc(mlsize_t wosize, tag_t tag)
@@ -348,6 +360,7 @@ static value actor_run(value root,
     message_quota_words, mailbox_message_limit, mailbox_byte_limit,
     monitor_limit);
   if (scheduler == NULL) goto cleanup;
+  caml_actor_scheduler_trace_enable_from_environment(scheduler);
 
   spawn_status = caml_actor_scheduler_prepare_root_closure_sized(
     scheduler, root, root_initial_heap_words,
@@ -371,9 +384,12 @@ static value actor_run(value root,
     goto cleanup;
   }
   prepared = NULL;
+  caml_actor_scheduler_trace_flush(scheduler);
 
   for (;;) {
     struct caml_actor_step step = caml_actor_scheduler_step(scheduler);
+
+    caml_actor_scheduler_trace_flush(scheduler);
 
     if (step.reason == CAML_ACTOR_STEP_REDUCTIONS
         || step.reason == CAML_ACTOR_STEP_YIELD
@@ -424,7 +440,11 @@ static value actor_run(value root,
 
 cleanup:
   if (prepared != NULL) caml_actor_scheduler_abort_prepared(prepared);
-  if (scheduler != NULL) caml_actor_scheduler_destroy(scheduler);
+  if (scheduler != NULL) {
+    caml_actor_scheduler_trace_finish(
+      scheduler, actor_run_outcome_name(outcome));
+    caml_actor_scheduler_destroy(scheduler);
+  }
   if (frozen) {
     world_status = caml_actor_world_thaw();
     if (world_status != CAML_ACTOR_WORLD_OK) {
@@ -835,10 +855,14 @@ CAMLprim value caml_actor_send(value pid_value, value message)
   pid = (uintnat)Long_val(pid_value);
   send_status = caml_actor_scheduler_can_send(scheduler, pid);
   if (send_status == CAML_ACTOR_SEND_NO_SUCH_ACTOR) {
+    caml_actor_scheduler_trace_send_rejected(
+      scheduler, pid, CAML_ACTOR_TRACE_REJECT_MISSING);
     return actor_send_error(0, NULL);
   }
   if (send_status == CAML_ACTOR_SEND_QUOTA) {
     caml_actor_scheduler_record_mailbox_quota_failure(scheduler);
+    caml_actor_scheduler_trace_send_rejected(
+      scheduler, pid, CAML_ACTOR_TRACE_REJECT_QUOTA);
     return actor_send_error(1, NULL);
   }
   if (send_status != CAML_ACTOR_SEND_OK) {
@@ -856,10 +880,14 @@ CAMLprim value caml_actor_send(value pid_value, value message)
   if (encoded.status != CAML_ACTOR_WIRE_ENCODE_OK) {
     if (encoded.status == CAML_ACTOR_WIRE_ENCODE_TOO_LARGE) {
       caml_actor_scheduler_record_mailbox_quota_failure(scheduler);
+      caml_actor_scheduler_trace_send_rejected(
+        scheduler, pid, CAML_ACTOR_TRACE_REJECT_QUOTA);
       return actor_send_error(1, NULL);
     }
     if (encoded.status == CAML_ACTOR_WIRE_ENCODE_INVALID_SOURCE
         || encoded.status == CAML_ACTOR_WIRE_ENCODE_UNSUPPORTED_VALUE) {
+      caml_actor_scheduler_trace_send_rejected(
+        scheduler, pid, CAML_ACTOR_TRACE_REJECT_UNSUPPORTED);
       return actor_send_error(2, "unsupported message value");
     }
     caml_actor_scheduler_request_unsupported();
@@ -871,10 +899,14 @@ CAMLprim value caml_actor_send(value pid_value, value message)
   if (send_status != CAML_ACTOR_SEND_OK) {
     caml_actor_wire_destroy(encoded.envelope);
     if (send_status == CAML_ACTOR_SEND_NO_SUCH_ACTOR) {
+      caml_actor_scheduler_trace_send_rejected(
+        scheduler, pid, CAML_ACTOR_TRACE_REJECT_MISSING);
       return actor_send_error(0, NULL);
     }
     if (send_status == CAML_ACTOR_SEND_QUOTA) {
       caml_actor_scheduler_record_mailbox_quota_failure(scheduler);
+      caml_actor_scheduler_trace_send_rejected(
+        scheduler, pid, CAML_ACTOR_TRACE_REJECT_QUOTA);
       return actor_send_error(1, NULL);
     }
     caml_actor_scheduler_request_unsupported();
