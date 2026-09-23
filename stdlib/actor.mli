@@ -74,6 +74,9 @@ type world_config = {
   max_mailbox_bytes : int;
   max_monitors : int;
   max_timers : int;
+  max_net_resources : int;
+  max_net_operations : int;
+  max_net_buffered_bytes : int;
 }
 (** Immutable actor-world limits. [max_actors] includes the root actor and must
     be between 2 and 65,536. Reduction and message limits must be positive.
@@ -141,6 +144,18 @@ type stats = {
   timers_cancelled : int;
   timer_quota_failures : int;
   timer_limit : int;
+  net_resources : int;
+  peak_net_resources : int;
+  net_operations : int;
+  peak_net_operations : int;
+  net_buffered_bytes : int;
+  peak_net_buffered_bytes : int;
+  net_quota_failures : int;
+  net_closed : int;
+  net_errors : int;
+  net_resource_limit : int;
+  net_operation_limit : int;
+  net_byte_limit : int;
 }
 (** A deterministic snapshot of the current actor world's scheduler counts.
     [runnable_actors] includes the actor taking the snapshot.
@@ -262,6 +277,52 @@ module Timer : sig
   val sleep : float -> (unit, error) result
   (** Register and await one timer. Zero yields once without reserving a timer.
       Actor cancellation removes all its timers. Timers may run late. *)
+end
+
+module Net : sig
+  (** Numeric IPv4 TCP servers on Linux bytecode runtimes. Waiting suspends
+      only the caller. Handles have exactly one actor owner; sending or
+      capturing a handle does not transfer authority. *)
+  type listener
+  type socket
+  type error = Invalid_argument | Invalid_handle | Descriptor_limit
+             | Operation_limit | Buffer_limit | Resource_unavailable
+             | Unsupported_platform | No_such_actor | Mailbox_limit
+             | Transfer_self | Busy | Io_error of int
+
+  val listen : address:string -> port:int -> (listener, error) result
+  (** Bind a numeric IPv4 address, with a backlog of 128. Port zero asks the
+      operating system to allocate a port. No DNS lookup is performed. *)
+
+  val local_port : listener -> (int, error) result
+  val accept : listener -> (socket, error) result
+  (** The accepting actor owns the socket. *)
+
+  val read : socket -> bytes -> int -> int -> (int, error) result
+  (** Read at most 64 KiB into the given actor-owned range. A short result is
+      normal; zero for a positive length means EOF. Buffered input precedes
+      EOF even when the peer has closed. *)
+
+  val write : socket -> bytes -> int -> int -> (int, error) result
+  (** Write at most 64 KiB from the given actor-owned range. A short result is
+      normal. The count records bytes accepted locally, not peer delivery.
+      Read and write validate zero-length requests and return zero immediately.
+      An operation is consumed once across bytecode retries. *)
+
+  val transfer : socket -> socket pid -> (unit, error) result
+  (** Atomically give the socket to another live actor and enqueue its fresh
+      handle in that actor's inbox. Failure preserves ownership and the inbox.
+      Success invalidates every alias of the old handle, including after a
+      transfer back. Self-transfer is rejected. *)
+
+  val close : socket -> (unit, error) result
+  val close_listener : listener -> (unit, error) result
+  (** Close an owned resource. Stale or foreign handles return
+      [Invalid_handle].
+      Actor and world exit close all owned resources and cancel pending I/O.
+      Limits default to 1,024 resources, 1,024 operations and 8 MiB of staged
+      bytes;
+      an accept reservation and unconsumed completion remain charged. *)
 end
 
 module Supervisor : sig

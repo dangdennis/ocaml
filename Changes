@@ -46,6 +46,12 @@ OCaml 5.5.0 (19 June 2026)
 
 ### Standard library:
 
+- Actor fork: add owned nonblocking IPv4 TCP listeners and sockets, staged
+  short I/O, atomic ownership transfer, bounded epoll readiness integrated with
+  timer waiting, resource quotas and exit cleanup, and trace schema v3.
+  (Dennis Dang, with OpenAI Codex assistance)
+
+
 - #13372: New Format and Printf printf-like functions that accept a
    heterogeneous list as arguments.
     Format.lprintf "@[%s@ %d@]@." [ "x ="; 1 ]

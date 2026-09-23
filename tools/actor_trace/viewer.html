@@ -215,7 +215,7 @@
       };
       function model() {
         const actors = new Map(), messages = new Map(), timers = new Map();
-        let header = null, footer = null;
+        let header = null, footer = null, network = null;
         for (const e of events.slice(0, index)) {
           if (e.event === "world_start") header = e;
           if (e.event === "world_end") footer = e;
@@ -240,6 +240,10 @@
               if (timer.actor === e.actor) timers.delete(id);
             }
           }
+          if (e.event === "net") {
+            network = { resources: e.resources, operations: e.operations,
+              buffered_bytes: e.buffered_bytes };
+          }
           if (e.event === "send") messages.set(e.message, e);
           if (e.event === "receive" || e.event === "drop") {
             messages.delete(e.message);
@@ -255,6 +259,7 @@
           actors: [...actors.values()],
           messages: [...messages.values()],
           timers: [...timers.values()],
+          network,
           header,
           footer,
         };
@@ -380,6 +385,7 @@
             actors: m.actors.length,
             messages_in_flight: m.messages.length,
             timers: m.timers.length,
+            network: m.network,
             schema: m.header?.schema,
             outcome: m.footer?.outcome,
           };
@@ -419,7 +425,7 @@
                 }
               }),
             header = parsed.find((e) => e.event === "world_start");
-          if (header && ![1, 2].includes(header.schema)) {
+          if (header && ![1, 2, 3].includes(header.schema)) {
             schemaError = `Unsupported trace schema ${header.schema}`;
             events = [];
             index = 0;

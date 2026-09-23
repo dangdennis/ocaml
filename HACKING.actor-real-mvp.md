@@ -218,3 +218,20 @@ Native actor execution, Domains, systhreads, dynlink, finalizers, weak values,
 ephemerons, arbitrary custom blocks, bigarrays, effect continuations, blocking
 Unix calls, selective receive, distributed actors, and hot code loading stay
 outside this stack unless a later contract test explicitly admits them.
+
+## Layer 16 implementation boundary
+
+The public `Actor.Net` API and ownership rules are described in
+`runtime/README.actor-mvp.md`. `LAYER_16_PLAN.md` records the implementation and
+validation plan. Runtime tests include a deterministic syscall/readiness
+backend, cancellation and reuse stress, transfer rollback, and a real loopback
+client with fragmented input and forced output backpressure. The loopback
+fixture binds port zero and uses pipes for coordination; wall time is only a
+watchdog. It checks actual OS descriptor counts after every world.
+
+Run the complete actor suite on normal, debug and instrumented bytecode
+runtimes. `actor_net_store.ml` exercises the pointer-free C operation engine;
+`actor_net_fake.ml` exercises resumed public operations; `actor_net_stress.ml`
+combines small heaps, quotas, transfers, PID reuse, supervision and signals.
+The existing actor CI discovers these tests automatically. New primitives and
+arbitrary C_CALLN support were not introduced.
