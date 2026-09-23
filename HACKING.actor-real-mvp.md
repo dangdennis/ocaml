@@ -166,7 +166,7 @@ cleanup, platform, and event-wait semantics.
 
 The scheduler owns raw descriptors. Actors hold generation-tagged immediate
 handles, and actor exit closes every resource it still owns. An accepted
-socket starts owned by the listener. `Actor.Net.transfer` atomically changes
+socket starts owned by the accepting actor. `Actor.Net.transfer` atomically changes
 ownership and enqueues the socket handle in the target's typed inbox; failure
 does neither. Ordinary messages never carry raw descriptors.
 
@@ -204,11 +204,13 @@ module Net : sig
   type error
 
   val listen : address:string -> port:int -> (listener, error) result
+  val local_port : listener -> (int, error) result
   val accept : listener -> (socket, error) result
   val read : socket -> bytes -> int -> int -> (int, error) result
   val write : socket -> bytes -> int -> int -> (int, error) result
   val transfer : socket -> socket pid -> (unit, error) result
-  val close : socket -> unit
+  val close : socket -> (unit, error) result
+  val close_listener : listener -> (unit, error) result
 end
 ```
 

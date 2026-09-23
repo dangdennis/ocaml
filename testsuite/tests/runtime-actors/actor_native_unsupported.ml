@@ -23,6 +23,8 @@ let () =
   | Error Actor.Unsupported_runtime -> ()
   | _ -> assert false
   end;
+  expect_invalid_argument "Actor.Net outside an actor world"
+    (fun () -> Actor.Net.listen ~address:"127.0.0.1" ~port:0);
   let pid : unit Actor.pid = Obj.magic 0 in
   expect_invalid_argument "Actor.monitor outside an actor world"
     (fun () -> Actor.monitor pid);
