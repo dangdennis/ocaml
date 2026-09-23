@@ -63,13 +63,13 @@ static int real_now(void *context, uint64_t *now)
   *now = (uint64_t)ts.tv_sec * 1000000000 + (uint64_t)ts.tv_nsec;
   return 1;
 }
-static int real_wait(void *context, uint64_t deadline)
+static int real_wait_fd(uint64_t deadline, int descriptor)
 {
   struct timespec ts;
   sigset_t blocked, previous;
   uint64_t now, remaining;
   int status = -1, saved_errno = 0;
-  (void)context;
+  struct pollfd fd = { descriptor, POLLIN, 0 };
   sigfillset(&blocked);
   if (pthread_sigmask(SIG_SETMASK, &blocked, &previous) != 0) return -1;
   /* Checking while masked and atomically restoring the old mask in ppoll
@@ -83,13 +83,21 @@ static int real_wait(void *context, uint64_t deadline)
         test_signal_before_wait = 0;
         raise(SIGUSR1);
       }
-      status = ppoll(NULL, 0, &ts, &previous);
+      status = ppoll(descriptor < 0 ? NULL : &fd, descriptor < 0 ? 0 : 1,
+                     deadline == UINT64_MAX ? NULL : &ts, &previous);
       saved_errno = errno;
-      status = status == 0 ? 1 : saved_errno == EINTR ? 0 : -1;
+      status = status > 0 ? 2 : status == 0 ? 1
+        : saved_errno == EINTR ? 0 : -1;
     }
   }
   if (pthread_sigmask(SIG_SETMASK, &previous, NULL) != 0) return -1;
   return status;
+}
+
+static int real_wait(void *context, uint64_t deadline)
+{
+  (void)context;
+  return real_wait_fd(deadline, -1);
 }
 #endif
 
@@ -325,6 +333,29 @@ int caml_actor_timers_wait(struct caml_actor_timers *t, uint64_t deadline)
   }
   return result > 0 && now >= deadline ? 1 : 0;
 }
+/* A readiness wake may precede the timer deadline. The next scheduler pass
+   still checks the clock and promotes due timers before socket completions. */
+int caml_actor_timers_wait_fd(struct caml_actor_timers *t,
+                              uint64_t deadline, int descriptor)
+{
+#if defined(__linux__) && !defined(NATIVE_CODE)
+  uint64_t now;
+  int result;
+  if (t->backend.wait != real_wait)
+    return caml_actor_timers_wait(t, deadline);
+  if (t->failed || descriptor < 0) return -1;
+  result = real_wait_fd(deadline, descriptor);
+  if (result < 0 || !sample(t, &now)) {
+    t->failed = 1;
+    return -1;
+  }
+  return result == 2 || (result > 0 && now >= deadline) ? 1 : 0;
+#else
+  (void)t; (void)deadline; (void)descriptor;
+  return -1;
+#endif
+}
+
 void caml_actor_timers_retire(struct caml_actor_timers *t, uintnat owner)
 {
   for (uintnat i = 0; i < t->capacity; i++) {

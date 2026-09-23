@@ -56,6 +56,8 @@ CAMLextern void caml_actor_timer_consume(
 CAMLextern int caml_actor_timers_poll(
   struct caml_actor_timers *, uintnat budget,
   void (*ready)(void *, uintnat, uintnat, uint64_t), void *context);
+CAMLextern int caml_actor_timers_wait_fd(
+  struct caml_actor_timers *, uint64_t, int);
 CAMLextern int caml_actor_timers_wait(struct caml_actor_timers *, uint64_t);
 CAMLextern void caml_actor_timers_retire(struct caml_actor_timers *, uintnat);
 CAMLextern void caml_actor_timers_stats(const struct caml_actor_timers *,

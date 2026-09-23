@@ -26,3 +26,8 @@ every workload.
 charges are released. Compile it in the same way as `actor_bench.ml` and set
 `ACTOR_TIMER_BENCH_COUNT` (default 2,000; range 1 through 65,536).
 It reports host CPU seconds and imposes no shared-runner performance threshold.
+
+`net_bench.ml` measures 500 real loopback listener creations/queries/closes and
+checks zero live resources. Compile it the same way. The real TCP test adds
+fragmented echo and forced backpressure with descriptor leak checks. CI runs
+all three benchmark smoke tests without throughput thresholds.
