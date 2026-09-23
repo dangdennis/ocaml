@@ -37,7 +37,7 @@ Run `make -C testsuite one DIR=tests/runtime-actors` on normal, debug
 45 passing tests and one expected native-runtime skip. Separate ASan and
 UBSan source builds use the flags from `.github/workflows/actor-runtime.yml`.
 Both local sanitizer suites passed the same 45 tests with one expected skip.
-The public draft's checks also record fresh-runner sanitizer validation.
+Fresh-runner sanitizer validation remains a publication gate.
 
 Also run the callback, backtrace, effects, tool-ocamlactorcheck and tool-dumpobj
 suites; the pinned Astring package canary; actor/timer/network benchmark smoke;
@@ -46,11 +46,36 @@ suites; the pinned Astring package canary; actor/timer/network benchmark smoke;
 v1/v2/v3 replay model are checked, including 64-bit timer strings and network
 cleanup gauges. CI now runs all three benchmark smoke tests.
 
+## Native and non-Linux compatibility
+
+A macOS arm64 native/bytecode build passed with warnings treated as errors.
+The native actor guard test passed, including `Actor.Net.listen` rejection
+outside an actor world. The build uses GNU Make 4.4.1 and:
+
+```sh
+ac_cv_func_pipe2=no ac_cv_func_dup3=no ./configure \
+  --enable-ocamltest --enable-warn-error
+gmake -j8
+gmake -C testsuite one TEST=tests/runtime-actors/actor_native_unsupported.ml
+```
+
+The cache overrides select existing Unix fallbacks: this machine's SDK declares
+`pipe2` and `dup3` for macOS 27, beyond the deployment target of macOS 26.
+No Unix source changes were needed. Strict native compilation also exposed
+four unused bytecode helpers, reproduced at the Layer 15 base. They now share
+the existing bytecode compilation guards. The preprocessed bytecode source
+before and after this guard change is byte-for-byte identical.
+
 ## Evidence boundary
 
+GitHub Actions is disabled for this repository, so draft PR #19 has no CI
+runs. Full Build, MSVC, and fresh-runner actor checks remain pending until the
+repository owner enables Actions. Local results do not replace those gates.
+
 Actor execution remains Linux x86-64 bytecode only. Full Build and MSVC CI
-check other compiler/runtime configurations; a skipped native actor test is
-expected. Network readiness order is external input, with stable ordering only
-within each injected/polled batch. These tests do not establish an application
-support promise. Native/parallel actors, DNS, outbound connect, TLS, and the
+cover other compiler/runtime configurations when enabled; a skipped native
+actor test is expected in bytecode-only builds. Network readiness order is
+external input, with stable ordering only within each injected/polled batch.
+These tests do not establish an application support promise. Native/parallel
+actors, DNS, outbound connect, TLS, and the
 Layer 17 application/soak gates remain outside this implementation.

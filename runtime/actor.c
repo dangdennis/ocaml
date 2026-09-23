@@ -49,6 +49,8 @@ enum actor_run_outcome {
   ACTOR_RUN_DEADLOCK
 };
 
+#if !defined(NATIVE_CODE)
+
 static const char *actor_run_outcome_name(enum actor_run_outcome outcome)
 {
   switch (outcome) {
@@ -60,8 +62,6 @@ static const char *actor_run_outcome_name(enum actor_run_outcome outcome)
   }
   return "unknown";
 }
-
-#if !defined(NATIVE_CODE)
 
 static value actor_try_alloc(mlsize_t wosize, tag_t tag)
 {
@@ -671,12 +671,9 @@ static value actor_spawn(value closure, mlsize_t initial_heap_words,
 #endif
 }
 
+#if !defined(NATIVE_CODE)
 static value actor_spawn_monitored(value closure)
 {
-#if defined(NATIVE_CODE)
-  (void)closure;
-  caml_invalid_argument("Actor.spawn_monitored outside an actor world");
-#else
   struct caml_actor_scheduler *scheduler;
   struct caml_actor_prepared_spawn *prepared = NULL;
   enum caml_actor_spawn_status spawn_status;
@@ -733,15 +730,10 @@ static value actor_spawn_monitored(value closure)
     return Val_unit;
   }
   return ok;
-#endif
 }
 
 static value actor_monitor(value target_value)
 {
-#if defined(NATIVE_CODE)
-  (void)target_value;
-  caml_invalid_argument("Actor.monitor outside an actor world");
-#else
   struct caml_actor_scheduler *scheduler = Caml_state->actor_scheduler;
   enum caml_actor_monitor_status status;
   uintnat monitor_id;
@@ -774,15 +766,10 @@ static value actor_monitor(value target_value)
     return Val_unit;
   }
   return result;
-#endif
 }
 
 static value actor_cancel(value target_value)
 {
-#if defined(NATIVE_CODE)
-  (void)target_value;
-  caml_invalid_argument("Actor.cancel outside an actor world");
-#else
   struct caml_actor_scheduler *scheduler = Caml_state->actor_scheduler;
   enum caml_actor_monitor_status status;
 
@@ -802,10 +789,8 @@ static value actor_cancel(value target_value)
     return Val_unit;
   }
   return actor_alloc_one(0, Val_unit); /* Ok */
-#endif
 }
 
-#if !defined(NATIVE_CODE)
 /* All public timer results have one field. Allocate before consuming or
    publishing scheduler state; no actor allocation follows a successful
    commit. */

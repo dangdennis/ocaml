@@ -628,9 +628,11 @@ quotas, supervision, and fake/real signal arrival. Real TCP tests cover port-zer
 binding, fragmented input, short I/O, forced output backpressure, socket handoff,
 and OS descriptor counts returning to baseline.
 
-The implementation is on `codex/16-nonblocking-tcp`, stacked on the Layer 15 tip
-`a24deb6ec91edb0b4db10551dbe70f2c4d967d44`. The draft PR's current checks are the
-authority for fresh-runner Actor runtime, Hygiene, Build, and MSVC validation.
+The implementation is on `codex/16-nonblocking-tcp` in
+[draft PR #19](https://github.com/dangdennis/ocaml/pull/19), stacked on the Layer 15
+tip `a24deb6ec91edb0b4db10551dbe70f2c4d967d44`. GitHub Actions is currently
+disabled at repository level. Fresh-runner Actor runtime, Hygiene, Build, and
+MSVC validation remain pending; check the exact PR head once Actions is enabled.
 A published draft and successful tests do not substitute for maintainer review.
 
 ### Current next action
