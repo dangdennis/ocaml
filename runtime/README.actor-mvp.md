@@ -919,3 +919,48 @@ creating a false-green signal.
   the reference model.
 
 The full upstream bytecode tests remain the compatibility gate in every PR.
+
+## Layer 16: owned nonblocking TCP
+
+`Actor.Net` supports numeric IPv4 TCP listeners and sockets through `listen`,
+`local_port`, `accept`, `read`, `write`, `close`, `close_listener`, and atomic
+`transfer`. The backend uses Linux level-triggered `epoll`; the timer layer's
+signal-safe `ppoll` host wait also watches the reactor descriptor. Runnable
+actors poll at scheduler boundaries. Cancellation is processed before timers,
+and due timers before a bounded batch of I/O completions. Each readiness batch
+is sorted by operation identity, with duplicates and stale identities ignored.
+Open resources alone do not suppress deadlock: a live pending wait is required.
+
+Handles are immediate identities from a checked process-wide counter. Every
+operation checks resource kind and actor PID ownership. Closing, actor exit,
+and transfer invalidate previous handles; transfer allocates fresh authority
+even when the socket returns to its original owner. Mailbox capacity and its
+pointer-free envelope are prepared before the ownership transaction commits.
+A failed transfer changes neither authority nor the destination inbox.
+
+One actor may have one outstanding operation. C operation records retain no
+OCaml pointers. Buffers are staged in runtime-owned memory, and completed
+operations are retained until the resumed bytecode call consumes them once.
+Read destinations are recovered from the GC-tracked request after result
+allocation. The scheduler is entered without live C roots. No actor primitive
+performs an OS wait. Short reads/writes are ordinary results; EOF follows any
+buffered input. Writes suppress SIGPIPE per send and do not promise delivery.
+
+Existing world defaults remain unchanged. New positive limits default to
+1,024 resources, 1,024 operations, and 8 MiB staged bytes. A syscall transfers
+at most 64 KiB and a readiness batch contains at most 64 events. Pending accept
+reservations and completed operations remain charged. The reactor descriptor
+is internal and checked separately by OS descriptor leak tests. Zero-length
+I/O validates the owner and range, then returns without reserving an operation.
+
+Actor retirement releases operations and descriptors before monitor observers
+run and before PID reuse. Every world exit also closes remaining resources.
+Reactor failures abort the world with cleanup; ordinary socket errors return
+`Io_error errno`. Stats expose live/peak resources, operations and staged bytes,
+quota failures, closed descriptors, errors and configured limits. Schema v3
+adds bounded network lifecycle/gauge events; the viewer retains v1/v2 replay.
+
+DNS, outbound connect, TLS, UDP, files, listener transfer, half-close APIs,
+per-operation timeouts, general wait sets and native/parallel actors remain
+outside this layer. The supervised application and sustained service-level
+hardening remain Layer 17 work.

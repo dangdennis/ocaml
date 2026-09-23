@@ -58,6 +58,9 @@ type world_config = {
   max_mailbox_bytes : int;
   max_monitors : int;
   max_timers : int;
+  max_net_resources : int;
+  max_net_operations : int;
+  max_net_buffered_bytes : int;
 }
 
 let default_world_config = {
@@ -70,6 +73,9 @@ let default_world_config = {
   max_mailbox_bytes = 1 lsl 28;
   max_monitors = 1 lsl 16;
   max_timers = 1 lsl 16;
+  max_net_resources = 1_024;
+  max_net_operations = 1_024;
+  max_net_buffered_bytes = 8 * 1024 * 1024;
 }
 
 type run_error =
@@ -127,6 +133,18 @@ type stats = {
   timers_cancelled : int;
   timer_quota_failures : int;
   timer_limit : int;
+  net_resources : int;
+  peak_net_resources : int;
+  net_operations : int;
+  peak_net_operations : int;
+  net_buffered_bytes : int;
+  peak_net_buffered_bytes : int;
+  net_quota_failures : int;
+  net_closed : int;
+  net_errors : int;
+  net_resource_limit : int;
+  net_operation_limit : int;
+  net_byte_limit : int;
 }
 
 type run_request =
@@ -145,6 +163,7 @@ let run_with_heap_limits ~root ~child entry =
 
 type configured_run_request =
   int * int * int * int * int * int * int * int * int * int * int *
+  int * int * int *
   (unit inbox -> unit)
 
 external configured_run_request : configured_run_request ->
@@ -157,7 +176,9 @@ let run_with_config config entry =
      config.child_heap.initial_words, config.child_heap.maximum_words,
      config.max_actors, config.reductions_per_slice,
      config.max_message_words, config.max_mailbox_messages,
-     config.max_mailbox_bytes, config.max_monitors, config.max_timers, entry)
+     config.max_mailbox_bytes, config.max_monitors, config.max_timers,
+     config.max_net_resources, config.max_net_operations,
+     config.max_net_buffered_bytes, entry)
 
 type 'message spawn_request =
   int * int * ('message inbox -> unit)
@@ -241,6 +262,34 @@ module Timer = struct
   let sleep seconds =
     if seconds = 0. then (yield (); Ok ())
     else match after seconds with Error e -> Error e | Ok t -> await t
+end
+
+module Net = struct
+  type listener = int
+  type socket = int
+  type error = Invalid_argument | Invalid_handle | Descriptor_limit
+             | Operation_limit | Buffer_limit | Resource_unavailable
+             | Unsupported_platform | No_such_actor | Mailbox_limit
+             | Transfer_self | Busy | Io_error of int
+
+  external request : int * (int * int * 'buffer * int * int * int) ->
+    ('a, error) result = "caml_actor_receive"
+
+  let listen ~address ~port =
+    request (3, (0, 0, address, port, 0, 0))
+
+  let local_port listener = request (3, (1, listener, "", 0, 0, 0))
+  let accept listener = request (3, (2, listener, "", 0, 0, 0))
+  let read socket bytes offset length =
+    request (3, (3, socket, bytes, offset, length, 0))
+
+  let write socket bytes offset length =
+    request (3, (4, socket, bytes, offset, length, 0))
+
+  let close socket = request (3, (5, socket, "", 0, 0, 0))
+  let close_listener listener = request (3, (6, listener, "", 0, 0, 0))
+  let transfer socket destination =
+    request (3, (7, socket, "", 0, 0, destination))
 end
 
 module Supervisor = struct

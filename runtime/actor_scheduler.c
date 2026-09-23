@@ -122,7 +122,9 @@ actor_primitive_policy[] = {
 #undef ACTOR_PRIMITIVE
 #undef CAML_ACTOR_NO_PRIMITIVE
 
-enum actor_wait_kind { WAIT_NONE, WAIT_MAILBOX, WAIT_MONITOR, WAIT_TIMER };
+enum actor_wait_kind {
+  WAIT_NONE, WAIT_MAILBOX, WAIT_MONITOR, WAIT_TIMER, WAIT_IO
+};
 
 struct caml_actor_slot {
   enum actor_wait_kind wait_kind;
@@ -184,6 +186,8 @@ struct caml_actor_scheduler {
   uintnat monitor_quota_failures;
 
   struct caml_actor_timers *timers;
+  struct caml_actor_io *io;
+  int waiting_io;
   uint64_t wait_deadline;
   int timer_failed;
   unsigned wait_interruptions;
@@ -241,7 +245,8 @@ enum caml_actor_trace_kind {
   CAML_ACTOR_TRACE_DROP,
   CAML_ACTOR_TRACE_EXIT,
   CAML_ACTOR_TRACE_TIMER,
-  CAML_ACTOR_TRACE_TIMER_CLEANUP
+  CAML_ACTOR_TRACE_TIMER_CLEANUP,
+  CAML_ACTOR_TRACE_IO
 };
 
 struct caml_actor_trace_event {
@@ -433,6 +438,24 @@ static int trace_write_event(FILE *output,
       "\"count\":%llu}\n",
       (unsigned long long)event->sequence, (unsigned long long)event->actor,
       (unsigned long long)event->data[0]) >= 0;
+  case CAML_ACTOR_TRACE_IO: {
+    static const char *const actions[] = {
+      "listen", "port", "accept", "read", "write", "close", "close_listener",
+      "transfer", "waiting", "ready", "cleanup"
+    };
+    return fprintf(output,
+      "{\"event\":\"net\",\"seq\":%llu,\"actor\":%llu,"
+      "\"resource\":\"%llu\",\"operation\":\"%llu\",\"action\":\"%s\","
+      "\"bytes\":%llu,\"resources\":%llu,\"operations\":%llu,"
+      "\"buffered_bytes\":%llu}\n",
+      (unsigned long long)event->sequence, (unsigned long long)event->actor,
+      (unsigned long long)event->peer,
+      (unsigned long long)event->message_sequence,
+      actions[event->data[0]],
+      (unsigned long long)event->data[1], (unsigned long long)event->data[2],
+      (unsigned long long)event->data[3],
+      (unsigned long long)event->data[4]) >= 0;
+  }
   case CAML_ACTOR_TRACE_EXIT:
     return fprintf(output,
       "{\"event\":\"exit\",\"seq\":%llu,\"actor\":%llu,"
@@ -451,6 +474,29 @@ static void trace_timer(struct caml_actor_scheduler *s, uintnat owner,
   uintnat data[8] = {action, (uintnat)(deadline >> 32),
                     (uintnat)(deadline & UINT32_MAX), 0, 0, 0, 0, 0};
   trace_record(s, CAML_ACTOR_TRACE_TIMER, owner, id, 0, data);
+}
+
+void caml_actor_scheduler_trace_io(struct caml_actor_scheduler *s,
+  uintnat owner, uintnat action, uintnat resource, uintnat operation,
+  uintnat bytes)
+{
+  struct caml_actor_io_stats stats;
+  uintnat data[8] = {0};
+  caml_actor_io_stats(s->io, &stats);
+  data[0] = action; data[1] = bytes; data[2] = stats.resources;
+  data[3] = stats.operations; data[4] = stats.bytes;
+  trace_record(s, CAML_ACTOR_TRACE_IO, owner, resource, operation, data);
+}
+
+static void retire_io(struct caml_actor_scheduler *s, uintnat owner)
+{
+  struct caml_actor_io_stats before, after;
+  caml_actor_io_stats(s->io, &before);
+  caml_actor_io_retire(s->io, owner);
+  caml_actor_io_stats(s->io, &after);
+  if (before.resources != after.resources
+      || before.operations != after.operations)
+    caml_actor_scheduler_trace_io(s, owner, 10, 0, 0, 0);
 }
 
 static void retire_timers(struct caml_actor_scheduler *s, uintnat owner)
@@ -803,6 +849,42 @@ static int scheduler_monitors_valid(
 }
 #endif
 
+static struct caml_actor_io_backend test_io_backend;
+static int use_test_io_backend;
+
+void caml_actor_scheduler_test_io_backend(
+  const struct caml_actor_io_backend *backend)
+{
+  if (caml_actor_scheduler_is_running())
+    caml_fatal_error("I/O test backend requires host context");
+  use_test_io_backend = backend != NULL;
+  if (backend != NULL) test_io_backend = *backend;
+}
+
+int caml_actor_scheduler_configure_io(struct caml_actor_scheduler *scheduler,
+  uintnat resources, uintnat operations, uintnat bytes)
+{
+  struct caml_actor_io *io;
+  if (!refresh_host_context(scheduler) || scheduler->root_published) return 0;
+  io = caml_actor_io_create(resources, operations, bytes,
+                          use_test_io_backend ? &test_io_backend : NULL);
+  if (io == NULL) return 0;
+  caml_actor_io_destroy(scheduler->io);
+  scheduler->io = io;
+  return 1;
+}
+
+struct caml_actor_io *caml_actor_scheduler_io(struct caml_actor_scheduler *s)
+{
+  return running_context_matches(s) ? s->io : NULL;
+}
+
+void caml_actor_scheduler_cleanup_io(struct caml_actor_scheduler *s)
+{
+  if (!refresh_host_context(s)) caml_fatal_error("I/O cleanup outside host");
+  retire_io(s, 0);
+}
+
 static struct caml_actor_timer_backend test_timer_backend;
 static int use_test_timer_backend;
 
@@ -944,7 +1026,7 @@ void caml_actor_scheduler_trace_enable_from_environment(
   scheduler->trace_next_message = 1;
   caml_actor_timers_stats(scheduler->timers, &timer_stats);
   if (fprintf(scheduler->trace_output,
-      "{\"event\":\"world_start\",\"schema\":2,\"seq\":0,"
+      "{\"event\":\"world_start\",\"schema\":3,\"seq\":0,"
       "\"word_bytes\":%u,\"actor_capacity\":%llu,"
       "\"reduction_budget\":%llu,\"message_word_limit\":%llu,"
       "\"mailbox_message_limit\":%llu,\"mailbox_byte_limit\":%llu,"
@@ -990,7 +1072,7 @@ void caml_actor_scheduler_trace_finish(
   caml_actor_scheduler_trace_flush(scheduler);
   if (!scheduler->trace_failed) {
     if (fprintf(scheduler->trace_output,
-      "{\"event\":\"world_end\",\"schema\":2,\"seq\":%llu,"
+      "{\"event\":\"world_end\",\"schema\":3,\"seq\":%llu,"
       "\"outcome\":\"%s\",\"events_dropped\":%llu,"
       "\"complete\":%s}\n",
       (unsigned long long)(scheduler->trace_next_sequence + 1),
@@ -1023,6 +1105,8 @@ void caml_actor_scheduler_destroy(struct caml_actor_scheduler *scheduler)
     caml_fatal_error("actor scheduler destroyed outside its host context");
   }
 
+  caml_actor_io_destroy(scheduler->io);
+  scheduler->io = NULL;
   scheduler->ready_head = ACTOR_SLOT_NONE;
   scheduler->ready_tail = ACTOR_SLOT_NONE;
   for (uintnat index = 0; index < scheduler->capacity; index++) {
@@ -1500,6 +1584,23 @@ static void timer_ready(void *context, uintnat owner, uintnat id,
   }
 }
 
+static void io_ready(void *context, uintnat owner, uintnat operation)
+{
+  struct caml_actor_scheduler *s = context;
+  const struct caml_actor_slot *found;
+  struct caml_actor_slot *slot;
+  if (lookup_slot(s, owner, &found) != CAML_ACTOR_PID_PRESENT) return;
+  slot = &s->slots[owner & CAML_ACTOR_PID_INDEX_MASK];
+  if (slot->lifecycle == CAML_ACTOR_LIFECYCLE_BLOCKED
+      && slot->wait_kind == WAIT_IO && slot->wait_timer == operation) {
+    caml_actor_scheduler_trace_io(s, owner, 9, 0, operation, 0);
+    slot->wait_kind = WAIT_NONE;
+    slot->wait_timer = 0;
+    slot->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNABLE;
+    enqueue_tail(s, owner & CAML_ACTOR_PID_INDEX_MASK);
+  }
+}
+
 int caml_actor_scheduler_wait(struct caml_actor_scheduler *scheduler)
 {
   if (!refresh_host_context(scheduler) || scheduler->timer_failed) return -1;
@@ -1509,7 +1610,10 @@ int caml_actor_scheduler_wait(struct caml_actor_scheduler *scheduler)
   if (caml_check_pending_signals()
       || (caml_check_pending_actions() && !caml_actor_world_is_frozen()))
     return -1;
-  result = caml_actor_timers_wait(scheduler->timers, scheduler->wait_deadline);
+  result = scheduler->waiting_io
+    ? caml_actor_io_wait(scheduler->io, scheduler->timers,
+                         scheduler->wait_deadline)
+    : caml_actor_timers_wait(scheduler->timers, scheduler->wait_deadline);
   if (caml_check_pending_signals()) return -1;
   if (result == 0) {
     if (++scheduler->wait_interruptions >= 64) return -1;
@@ -1561,15 +1665,26 @@ struct caml_actor_step caml_actor_scheduler_step(
     step.reason = CAML_ACTOR_STEP_RUNTIME_FAILURE;
     return step;
   }
+  if (scheduler->io != NULL
+      && !caml_actor_io_poll(scheduler->io, io_ready, scheduler)) {
+    step.reason = CAML_ACTOR_STEP_RUNTIME_FAILURE;
+    return step;
+  }
   index = dequeue_head(scheduler);
   if (index == ACTOR_SLOT_NONE) {
     int waiting = 0;
+    scheduler->waiting_io = 0;
+    scheduler->wait_deadline = UINT64_MAX;
     for (uintnat i = 0; i < scheduler->capacity; i++) {
       struct caml_actor_slot *waiter = &scheduler->slots[i];
       uint64_t deadline;
       enum caml_actor_timer_status status;
-      if (waiter->lifecycle != CAML_ACTOR_LIFECYCLE_BLOCKED
-          || waiter->wait_kind != WAIT_TIMER) continue;
+      if (waiter->lifecycle != CAML_ACTOR_LIFECYCLE_BLOCKED) continue;
+      if (waiter->wait_kind == WAIT_IO) {
+        scheduler->waiting_io = 1;
+        continue;
+      }
+      if (waiter->wait_kind != WAIT_TIMER) continue;
       status = caml_actor_timer_peek(scheduler->timers, waiter->pid,
                                      waiter->wait_timer, &deadline);
       if (status != CAML_ACTOR_TIMER_PENDING && status != CAML_ACTOR_TIMER_OK) {
@@ -1580,7 +1695,7 @@ struct caml_actor_step caml_actor_scheduler_step(
         scheduler->wait_deadline = deadline;
       waiting = 1;
     }
-    if (waiting) step.reason = CAML_ACTOR_STEP_WAIT;
+    if (waiting || scheduler->waiting_io) step.reason = CAML_ACTOR_STEP_WAIT;
     return step;
   }
   slot = &scheduler->slots[index];
@@ -2212,6 +2327,7 @@ int caml_actor_scheduler_stats(
   stats->monitor_quota_failures = scheduler->monitor_quota_failures;
   stats->monitor_limit = scheduler->monitor_limit;
   caml_actor_timers_stats(scheduler->timers, &stats->timers);
+  caml_actor_io_stats(scheduler->io, &stats->io);
 
   for (uintnat index = 0; index < scheduler->capacity; index++) {
     const struct caml_actor_slot *slot = &scheduler->slots[index];
@@ -2400,6 +2516,7 @@ int caml_actor_scheduler_retire(struct caml_actor_scheduler *scheduler,
   index = (uint32_t)(pid & CAML_ACTOR_PID_INDEX_MASK);
   slot = &scheduler->slots[index];
   CAMLassert(!slot->queued);
+  retire_io(scheduler, pid);
   retire_timers(scheduler, pid);
   slot->wait_kind = WAIT_NONE;
   slot->wait_timer = 0;
@@ -2539,6 +2656,11 @@ int caml_actor_scheduler_request_blocked(void)
 int caml_actor_scheduler_request_monitor_blocked(void)
 {
   return block_for(WAIT_MONITOR, 0);
+}
+int caml_actor_scheduler_io_block(struct caml_actor_scheduler *s, uintnat id)
+{
+  if (!running_context_matches(s)) return 0;
+  return block_for(WAIT_IO, id);
 }
 int caml_actor_scheduler_timer_block(struct caml_actor_scheduler *s, uintnat id)
 {

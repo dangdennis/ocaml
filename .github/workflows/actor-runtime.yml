@@ -60,11 +60,13 @@ jobs:
       - name: Benchmark smoke test
         run: |
           bench_dir="$(mktemp -d)"
-          cp testsuite/benchmarks/runtime-actors/actor_bench.ml "$bench_dir/"
-          ./runtime/ocamlrun ./ocamlc -I stdlib \
-            -o "$bench_dir/actor_bench.byte" "$bench_dir/actor_bench.ml"
-          ACTOR_BENCH_SCALE=1 \
-            ./runtime/ocamlrun "$bench_dir/actor_bench.byte"
+          for benchmark in actor timer net; do
+            cp "testsuite/benchmarks/runtime-actors/${benchmark}_bench.ml" "$bench_dir/"
+            ./runtime/ocamlrun ./ocamlc -I stdlib \
+              -o "$bench_dir/${benchmark}_bench.byte" "$bench_dir/${benchmark}_bench.ml"
+            ACTOR_BENCH_SCALE=1 \
+              ./runtime/ocamlrun "$bench_dir/${benchmark}_bench.byte"
+          done
 
   sanitizer:
     name: ${{ matrix.name }} actor tests
