@@ -55,6 +55,8 @@ enum caml_actor_heap_store_status {
 
 CAMLextern struct caml_actor_heap *caml_actor_heap_create(
   uintnat owner, mlsize_t quota_words);
+CAMLextern struct caml_actor_heap *caml_actor_heap_create_sized(
+  uintnat owner, mlsize_t initial_words, mlsize_t maximum_words);
 CAMLextern void caml_actor_heap_destroy(struct caml_actor_heap *heap);
 
 CAMLextern int caml_actor_heap_activate(struct caml_actor_heap *heap);
@@ -83,6 +85,8 @@ CAMLextern uintnat caml_actor_heap_owner(
   const struct caml_actor_heap *heap);
 CAMLextern mlsize_t caml_actor_heap_quota_words(
   const struct caml_actor_heap *heap);
+CAMLextern mlsize_t caml_actor_heap_capacity_words(
+  const struct caml_actor_heap *heap);
 CAMLextern mlsize_t caml_actor_heap_used_words(
   const struct caml_actor_heap *heap);
 CAMLextern uintnat caml_actor_heap_blocks(
@@ -90,6 +94,8 @@ CAMLextern uintnat caml_actor_heap_blocks(
 CAMLextern uintnat caml_actor_heap_shared_bypasses(
   const struct caml_actor_heap *heap);
 CAMLextern uintnat caml_actor_heap_collections(
+  const struct caml_actor_heap *heap);
+CAMLextern uintnat caml_actor_heap_growths(
   const struct caml_actor_heap *heap);
 CAMLextern void caml_actor_heap_note_shared_bypass(
   struct caml_actor_heap *heap);

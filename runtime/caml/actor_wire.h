@@ -59,6 +59,8 @@ CAMLextern enum caml_actor_wire_decode_status caml_actor_wire_decode(
 
 CAMLextern int caml_actor_wire_verify(
   const struct caml_actor_envelope *envelope);
+CAMLextern int caml_actor_wire_encoded_bytes(
+  const struct caml_actor_envelope *envelope, uintnat *encoded_bytes);
 CAMLextern void caml_actor_wire_destroy(
   struct caml_actor_envelope *envelope);
 

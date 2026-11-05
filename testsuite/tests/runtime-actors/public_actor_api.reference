@@ -3,3 +3,5 @@ spawn capture copy: ok
 global mutation fence: ok
 capture rejection: ok
 public actor failures: ok
+elastic heap limits: ok
+world configuration: ok
