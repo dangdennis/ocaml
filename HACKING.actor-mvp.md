@@ -112,6 +112,28 @@ make -C testsuite one DIR=tests/effects
 make -C api_docgen
 ```
 
+## Runtime counters and benchmarks
+
+Actor code can snapshot deterministic scheduler totals with [Actor.stats].
+The snapshot includes live/runnable/blocked actors, lifecycle totals,
+dispatch and reduction-stop totals, message totals, and current queued
+messages. Messages discarded when an actor retires are counted separately.
+It is actor-world local and raises [Invalid_argument] on the host.
+
+Run the informational benchmark suite with:
+
+```sh
+bench_dir="$(mktemp -d)"
+cp testsuite/benchmarks/runtime-actors/actor_bench.ml "$bench_dir/"
+./runtime/ocamlrun ./ocamlc -I stdlib \
+  -o "$bench_dir/actor_bench.byte" \
+  "$bench_dir/actor_bench.ml"
+ACTOR_BENCH_SCALE=1 ./runtime/ocamlrun "$bench_dir/actor_bench.byte"
+```
+
+Keep raw samples and compare only runs from the same otherwise-idle machine.
+Shared CI runners do not enforce benchmark thresholds.
+
 For a from-scratch gate:
 
 ```sh
@@ -143,12 +165,12 @@ Each branch targets the previous branch, not the pinned base. For a new top
 layer:
 
 ```sh
-git switch actor-mvp/07-failure-hardening
-git switch -c actor-mvp/next-layer
-git push -u origin actor-mvp/next-layer
+git switch actor-real/08-contract-observability-baseline
+git switch -c actor-real/09-frozen-global-reads
+git push -u origin actor-real/09-frozen-global-reads
 gh pr create --draft \
-  --base actor-mvp/07-failure-hardening \
-  --head actor-mvp/next-layer
+  --base actor-real/08-contract-observability-baseline \
+  --head actor-real/09-frozen-global-reads
 ```
 
 If a lower layer changes, rebase each descendant in order and push with

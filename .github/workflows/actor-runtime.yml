@@ -1,0 +1,97 @@
+name: Actor runtime
+
+on:
+  push:
+    branches:
+      - 'actor-mvp/**'
+      - 'actor-real/**'
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    name: Focused bytecode actor loop
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Verify checkout
+        run: test -z "$(git status --porcelain=v1)"
+      - name: Configure
+        run: >-
+          ./configure
+          --disable-native-compiler
+          --disable-native-toplevel
+          --enable-debug-runtime
+          --enable-instrumented-runtime
+          --enable-ocamltest
+          --enable-warn-error
+      - name: Build
+        run: make -j2
+      - name: Normal actor tests
+        run: >-
+          make -C testsuite one DIR=tests/runtime-actors
+          OCAMLTESTDIR=/tmp/actors-normal
+          TESTLOG=/tmp/actors-normal.log
+      - name: Debug actor tests
+        run: >-
+          make -C testsuite one DIR=tests/runtime-actors USE_RUNTIME=d
+          OCAMLTESTDIR=/tmp/actors-debug
+          TESTLOG=/tmp/actors-debug.log
+      - name: Instrumented actor tests
+        run: >-
+          make -C testsuite one DIR=tests/runtime-actors USE_RUNTIME=i
+          OCAMLTESTDIR=/tmp/actors-instrumented
+          TESTLOG=/tmp/actors-instrumented.log
+      - name: Benchmark smoke test
+        run: |
+          bench_dir="$(mktemp -d)"
+          cp testsuite/benchmarks/runtime-actors/actor_bench.ml "$bench_dir/"
+          ./runtime/ocamlrun ./ocamlc -I stdlib \
+            -o "$bench_dir/actor_bench.byte" "$bench_dir/actor_bench.ml"
+          ACTOR_BENCH_SCALE=1 \
+            ./runtime/ocamlrun "$bench_dir/actor_bench.byte"
+
+  sanitizer:
+    name: ${{ matrix.name }} actor tests
+    runs-on: ubuntu-24.04
+    env:
+      ASAN_OPTIONS: abort_on_error=1:detect_leaks=0:symbolize=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ASan
+            flags: -O1 -g3 -fno-omit-frame-pointer -fsanitize=address
+          - name: UBSan
+            flags: -O1 -g3 -fno-omit-frame-pointer -fsanitize=undefined -fno-sanitize-recover=all
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Configure
+        env:
+          CFLAGS: ${{ matrix.flags }}
+          COMPILER_BYTECODE_CFLAGS: ${{ matrix.flags }}
+          LDFLAGS: ${{ contains(matrix.name, 'ASan') && '-fsanitize=address' || '-fsanitize=undefined' }}
+        run: >-
+          ./configure
+          --disable-native-compiler
+          --disable-native-toplevel
+          --disable-debug-runtime
+          --disable-instrumented-runtime
+          --enable-ocamltest
+      - name: Build
+        run: make -j2
+      - name: Run actor tests
+        run: >-
+          make -C testsuite one DIR=tests/runtime-actors
+          OCAMLTESTDIR=/tmp/actors-sanitized
+          TESTLOG=/tmp/actors-sanitized.log

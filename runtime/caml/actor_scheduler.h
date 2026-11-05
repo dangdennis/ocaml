@@ -60,6 +60,18 @@ enum caml_actor_failure {
   CAML_ACTOR_FAILURE_INTERNAL
 };
 
+enum caml_actor_unsupported_kind {
+  CAML_ACTOR_UNSUPPORTED_NONE = 0,
+  CAML_ACTOR_UNSUPPORTED_OPCODE,
+  CAML_ACTOR_UNSUPPORTED_PRIMITIVE
+};
+
+struct caml_actor_unsupported {
+  enum caml_actor_unsupported_kind kind;
+  uintnat operation;
+  int arity;
+};
+
 enum caml_actor_step_reason {
   CAML_ACTOR_STEP_IDLE = 0,
   CAML_ACTOR_STEP_REDUCTIONS,
@@ -102,6 +114,22 @@ struct caml_actor_snapshot {
   uintnat pid;
   uintnat dispatches;
   uintnat reduction_stops;
+  struct caml_actor_unsupported unsupported;
+};
+
+struct caml_actor_scheduler_stats {
+  uintnat live_actors;
+  uintnat runnable_actors;
+  uintnat blocked_actors;
+  uintnat total_spawned;
+  uintnat total_exited;
+  uintnat total_failed;
+  uintnat total_dispatches;
+  uintnat total_reduction_stops;
+  uintnat messages_sent;
+  uintnat messages_received;
+  uintnat messages_dropped;
+  uintnat mailbox_messages;
 };
 
 CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create(
@@ -161,6 +189,9 @@ CAMLextern struct caml_actor_step caml_actor_scheduler_step(
 CAMLextern enum caml_actor_pid_lookup caml_actor_scheduler_snapshot(
   const struct caml_actor_scheduler *scheduler, uintnat pid,
   struct caml_actor_snapshot *snapshot);
+CAMLextern int caml_actor_scheduler_stats(
+  const struct caml_actor_scheduler *scheduler,
+  struct caml_actor_scheduler_stats *stats);
 CAMLextern int caml_actor_scheduler_retire(
   struct caml_actor_scheduler *scheduler, uintnat pid);
 
@@ -175,6 +206,10 @@ CAMLextern int caml_actor_scheduler_request_yield(void);
 CAMLextern int caml_actor_scheduler_request_blocked(void);
 CAMLextern int caml_actor_scheduler_request_unsupported(void);
 CAMLextern int caml_actor_scheduler_request_heap_exhausted(void);
+CAMLextern void caml_actor_scheduler_record_unsupported_opcode(
+  uintnat opcode);
+CAMLextern void caml_actor_scheduler_record_unsupported_primitive(
+  uintnat primitive, int arity);
 CAMLextern enum caml_actor_control_request
 caml_actor_scheduler_take_control_request(void);
 CAMLextern int caml_actor_scheduler_primitive_allowed(
