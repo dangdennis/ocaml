@@ -21,6 +21,7 @@
 
 #include "mlvalues.h"
 #include "actor_timer.h"
+#include "actor_io.h"
 
 struct caml_actor_scheduler;
 struct caml_actor_prepared_spawn;
@@ -191,6 +192,7 @@ struct caml_actor_scheduler_stats {
   uintnat monitor_quota_failures;
   uintnat monitor_limit;
   struct caml_actor_timer_stats timers;
+  struct caml_actor_io_stats io;
 };
 
 CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create(
@@ -200,6 +202,17 @@ CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words,
   mlsize_t message_quota_words, uintnat mailbox_message_limit,
   uintnat mailbox_byte_limit, uintnat monitor_limit);
+CAMLextern int caml_actor_scheduler_configure_io(
+  struct caml_actor_scheduler *, uintnat, uintnat, uintnat);
+CAMLextern struct caml_actor_io *caml_actor_scheduler_io(
+  struct caml_actor_scheduler *);
+CAMLextern int caml_actor_scheduler_io_block(
+  struct caml_actor_scheduler *, uintnat);
+CAMLextern void caml_actor_scheduler_cleanup_io(struct caml_actor_scheduler *);
+CAMLextern void caml_actor_scheduler_trace_io(
+  struct caml_actor_scheduler *, uintnat, uintnat, uintnat, uintnat, uintnat);
+CAMLextern void caml_actor_scheduler_test_io_backend(
+  const struct caml_actor_io_backend *);
 CAMLextern int caml_actor_scheduler_configure_timers(
   struct caml_actor_scheduler *, uintnat);
 CAMLextern enum caml_actor_timer_status caml_actor_scheduler_timer_after(

@@ -61,6 +61,7 @@ part of the current roadmap.
 | Layer 13: deterministic tracing | `actor-real/13-tracing-visualization`, PR #16 | Complete and published as a stacked draft |
 | Layer 14: supervision | `actor-real/14-supervision`, PR #17 | Complete and published as a stacked draft |
 | Layer 15: timers and scheduler waiting | `codex/15-timers`, PR #18 | Complete and published as a stacked draft |
+| Layer 16: nonblocking TCP | `codex/16-nonblocking-tcp` | Implemented; stacked draft publication gates below |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -599,17 +600,47 @@ selective receive, timer callbacks/messages, and periodic timers remain deferred
 
 ## Layer 16: scheduler-owned nonblocking I/O
 
-Add a minimal nonblocking TCP surface backed by a scheduler reactor (initially
-Linux `epoll`):
+### Implemented contract
 
-- `listen`, `accept`, `read`, `write`, and `close`;
-- generation-tagged handles instead of heap pointers or bare descriptors;
-- exactly one actor owner for every live resource;
-- atomic ownership transfer where required;
-- automatic cancellation and cleanup when an actor exits; and
-- quotas for descriptors, buffered bytes, and pending operations.
+`Actor.Net` provides numeric IPv4 TCP listen/local-port/accept/read/write/close
+and atomic socket transfer. The Linux level-triggered epoll backend joins the
+existing signal-safe timer wait through its pollable reactor descriptor.
+Actors suspend independently; runnable work, timers, and bounded readiness
+batches progress together. General wait sets remain deferred.
 
-No actor may block the scheduler thread in an ordinary I/O primitive.
+Resource handles and operation identities are checked across owner/PID reuse,
+close, transfer, and successive worlds. Runtime-owned buffers and retained
+completions prevent duplicate I/O across bytecode retries; no C operation record
+holds an OCaml pointer. All resource and mailbox preparation precedes transfer
+commit. Retirement releases operations/descriptors before monitor observers run.
+
+Default bounds are 1,024 resources, 1,024 operations, 8 MiB staged bytes, 64 KiB
+per syscall and 64 ready events per pass. Existing configuration defaults and
+bootstrap primitive names remain unchanged. Stats and trace schema v3 expose
+bounded network lifecycle information; the viewer retains schemas v1 and v2.
+
+### Validation and publication gate
+
+`LAYER_16_VALIDATION.md` records the local tests and acceptance commands.
+Normal, debug and instrumented actor suites exercise the public contract,
+deterministic backend, 200-generation reuse and transfer stress, small heaps,
+quotas, supervision, and fake/real signal arrival. Real TCP tests cover port-zero
+binding, fragmented input, short I/O, forced output backpressure, socket handoff,
+and OS descriptor counts returning to baseline.
+
+The implementation is on `codex/16-nonblocking-tcp` in
+[draft PR #19](https://github.com/dangdennis/ocaml/pull/19), stacked on the Layer 15
+tip `a24deb6ec91edb0b4db10551dbe70f2c4d967d44`. GitHub Actions is currently
+disabled at repository level. Fresh-runner Actor runtime, Hygiene, Build, and
+MSVC validation remain pending; check the exact PR head once Actions is enabled.
+A published draft and successful tests do not substitute for maintainer review.
+
+### Current next action
+
+After the Layer 16 publication gates pass, build the Layer 17 supervised
+reference service using the owned-socket handoff. Preserve the current root-only
+supervisor boundary: listener restart does not imply cascading worker shutdown.
+The reference service must define and test that policy explicitly.
 
 ## Layer 17: reference service and hardening
 

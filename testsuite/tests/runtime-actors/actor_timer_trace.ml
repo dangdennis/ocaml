@@ -24,7 +24,7 @@ let () =
   let trace = really_input_string input (in_channel_length input) in
   close_in input;
   List.iter (fun text -> assert (contains trace text)) [
-    "\"schema\":2"; "\"timer_limit\":65536";
+    "\"schema\":3"; "\"timer_limit\":65536";
     "\"action\":\"created\""; "\"action\":\"cancelled\"";
     "\"action\":\"expired\""; "\"action\":\"consumed\"";
     "\"deadline_ns\":\"1000000000\"";

@@ -37,7 +37,7 @@ ACTOR_PRIMITIVE(
   "Commits a pointer-free mailbox message through the scheduler.")
 ACTOR_PRIMITIVE(
   "caml_actor_receive", caml_actor_receive, 1, SCHEDULER_AWARE, actor,
-  "Retries checked mailbox or owned monitor and timer waits without C roots.")
+  "Checks mailbox and owned wait requests with root-safe network retries.")
 ACTOR_PRIMITIVE(
   "caml_actor_stats", caml_actor_stats, 1, SCHEDULER_AWARE, actor,
   "Copies deterministic scheduler counters into the actor heap.")
