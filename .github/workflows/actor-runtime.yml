@@ -57,6 +57,11 @@ jobs:
           make -C testsuite one DIR=tests/tool-dumpobj \
             OCAMLTESTDIR=/tmp/tool-dumpobj \
             TESTLOG=/tmp/tool-dumpobj.log
+      - name: Supervised service acceptance and short soak
+        run: |
+          sh tools/ci/actions/actor-service.sh --seconds 5
+          ACTOR_SERVICE_RUNTIME=d sh tools/ci/actions/actor-service.sh --seconds 2
+          ACTOR_SERVICE_RUNTIME=i sh tools/ci/actions/actor-service.sh --seconds 2
       - name: Benchmark smoke test
         run: |
           bench_dir="$(mktemp -d)"
@@ -105,3 +110,5 @@ jobs:
           make -C testsuite one DIR=tests/runtime-actors
           OCAMLTESTDIR=/tmp/actors-sanitized
           TESTLOG=/tmp/actors-sanitized.log
+      - name: Supervised service acceptance
+        run: sh tools/ci/actions/actor-service.sh --seconds 2

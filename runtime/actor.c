@@ -1280,7 +1280,7 @@ static value actor_await_exit(value monitor)
   return result;
 }
 
-static value actor_await_any_exit(value request)
+static value actor_await_any_exit(value request, int select)
 {
   struct caml_actor_scheduler *scheduler = Caml_state->actor_scheduler;
   struct caml_actor_heap *heap = caml_actor_heap_current();
@@ -1300,17 +1300,29 @@ static value actor_await_any_exit(value request)
       || Tag_val(request) != 0 || Wosize_val(request) != 2
       || !caml_actor_heap_read_field(request, 0, &operation)
       || !caml_actor_heap_read_field(request, 1, &monitors)
-      || !Is_long(operation) || Long_val(operation) != 1) {
+      || !Is_long(operation) || Long_val(operation) != (select ? 4 : 1)) {
     caml_actor_scheduler_request_unsupported();
     return Val_unit;
+  }
+  if (select) {
+    value inbox;
+    if (!caml_actor_heap_owns_value(heap, monitors)
+        || Tag_val(monitors) != 0 || Wosize_val(monitors) != 2
+        || !caml_actor_heap_read_field(monitors, 0, &inbox)
+        || !Is_long(inbox)
+        || (uintnat)Long_val(inbox) != caml_actor_scheduler_current_pid()
+        || !caml_actor_heap_read_field(monitors, 1, &monitors)) {
+      caml_actor_scheduler_request_unsupported();
+      return Val_unit;
+    }
   }
   if (!actor_monitor_list_length(heap, monitors, &count)
-      || count == 0 || count > SIZE_MAX / sizeof(*ids)) {
+      || (!select && count == 0) || count > SIZE_MAX / sizeof(*ids)) {
     caml_actor_scheduler_request_unsupported();
     return Val_unit;
   }
-  ids = malloc(count * sizeof(*ids));
-  if (ids == NULL) {
+  ids = count == 0 ? NULL : malloc(count * sizeof(*ids));
+  if (count != 0 && ids == NULL) {
     caml_actor_scheduler_request_unsupported();
     return Val_unit;
   }
@@ -1327,7 +1339,7 @@ static value actor_await_any_exit(value request)
     }
     token = tail;
   }
-  qsort(ids, count, sizeof(*ids), compare_monitor_ids);
+  if (count > 1) qsort(ids, count, sizeof(*ids), compare_monitor_ids);
   for (mlsize_t index = 0; index < count; index++) {
     if ((index > 0 && ids[index] == ids[index - 1])
         || caml_actor_scheduler_validate_monitor(scheduler, ids[index])
@@ -1364,7 +1376,32 @@ static value actor_await_any_exit(value request)
     selected_id = 0;
   }
   if (selected_id == 0) {
-    if (!caml_actor_scheduler_request_monitor_blocked()) {
+    if (select) {
+      const struct caml_actor_envelope *envelope =
+        caml_actor_scheduler_peek_current_message(scheduler);
+      if (envelope != NULL) {
+        value message;
+        enum caml_actor_wire_decode_status decoded =
+          caml_actor_wire_decode(envelope, heap, &message);
+        if (decoded == CAML_ACTOR_WIRE_DECODE_HEAP_EXHAUSTED) {
+          caml_actor_scheduler_request_heap_exhausted();
+          return Val_unit;
+        }
+        if (decoded != CAML_ACTOR_WIRE_DECODE_OK) {
+          caml_actor_scheduler_request_unsupported();
+          return Val_unit;
+        }
+        result = actor_alloc_one(0, message);
+        if (result == 0) return Val_unit;
+        if (!caml_actor_scheduler_consume_current_message(scheduler)) {
+          caml_actor_scheduler_request_unsupported();
+          return Val_unit;
+        }
+        return result;
+      }
+    }
+    if (!(select ? caml_actor_scheduler_request_event_blocked()
+                 : caml_actor_scheduler_request_monitor_blocked())) {
       caml_actor_scheduler_request_unsupported();
       return Val_unit;
     }
@@ -1372,7 +1409,8 @@ static value actor_await_any_exit(value request)
   }
   reason_value = actor_exit_reason(&reason);
   if (reason_value == 0) return Val_unit;
-  result = actor_alloc_two(0, Val_long(selected_index), reason_value);
+  result = actor_alloc_two(select ? 1 : 0, Val_long(selected_index),
+                           reason_value);
   if (result == 0) return Val_unit;
   if (!caml_actor_scheduler_consume_exit(scheduler, selected_id)) {
     caml_actor_scheduler_request_unsupported();
@@ -1408,7 +1446,7 @@ static int actor_net_address(const char *text, mlsize_t length, char *address)
 
 static enum caml_actor_io_status actor_net_transfer(
   struct caml_actor_scheduler *scheduler, struct caml_actor_io *io,
-  uintnat owner, uintnat handle, uintnat destination)
+  uintnat owner, uintnat handle, uintnat destination, value handoff)
 {
   struct caml_actor_prepared_send *prepared = NULL;
   struct caml_actor_wire_encode_result encoded;
@@ -1420,19 +1458,34 @@ static enum caml_actor_io_status actor_net_transfer(
   if (destination == owner) return CAML_ACTOR_IO_SELF;
   sent = caml_actor_scheduler_can_send(scheduler, destination);
   if (sent == CAML_ACTOR_SEND_NO_SUCH_ACTOR) return CAML_ACTOR_IO_MISSING;
-  if (sent == CAML_ACTOR_SEND_QUOTA) return CAML_ACTOR_IO_MAILBOX_LIMIT;
+  if (sent == CAML_ACTOR_SEND_QUOTA) {
+    caml_actor_scheduler_record_mailbox_quota_failure(scheduler);
+    return CAML_ACTOR_IO_MAILBOX_LIMIT;
+  }
   if (sent != CAML_ACTOR_SEND_OK) return CAML_ACTOR_IO_UNAVAILABLE;
   status = caml_actor_io_prepare_transfer(io, owner, handle, &fresh);
   if (status != CAML_ACTOR_IO_OK) return status;
   if (!caml_actor_scheduler_message_quota_words(scheduler, &words))
     return CAML_ACTOR_IO_UNAVAILABLE;
-  encoded = caml_actor_wire_encode(Val_long(fresh), words);
-  if (encoded.status != CAML_ACTOR_WIRE_ENCODE_OK)
+  if (handoff != Val_unit) Field(handoff, 0) = Val_long(fresh);
+  encoded = caml_actor_wire_encode(
+    handoff == Val_unit ? Val_long(fresh) : handoff, words);
+  if (encoded.status != CAML_ACTOR_WIRE_ENCODE_OK) {
+    if (encoded.status == CAML_ACTOR_WIRE_ENCODE_TOO_LARGE) {
+      caml_actor_scheduler_record_mailbox_quota_failure(scheduler);
+      return CAML_ACTOR_IO_MAILBOX_LIMIT;
+    }
+    if (encoded.status == CAML_ACTOR_WIRE_ENCODE_UNSUPPORTED_VALUE
+        || encoded.status == CAML_ACTOR_WIRE_ENCODE_INVALID_SOURCE)
+      return CAML_ACTOR_IO_ARGUMENT;
     return CAML_ACTOR_IO_UNAVAILABLE;
+  }
   sent = caml_actor_scheduler_prepare_send(
     scheduler, destination, encoded.envelope, &prepared);
   if (sent != CAML_ACTOR_SEND_OK) {
     caml_actor_wire_destroy(encoded.envelope);
+    if (sent == CAML_ACTOR_SEND_QUOTA)
+      caml_actor_scheduler_record_mailbox_quota_failure(scheduler);
     return sent == CAML_ACTOR_SEND_QUOTA ? CAML_ACTOR_IO_MAILBOX_LIMIT
       : sent == CAML_ACTOR_SEND_NO_SUCH_ACTOR ? CAML_ACTOR_IO_MISSING
       : CAML_ACTOR_IO_UNAVAILABLE;
@@ -1454,14 +1507,23 @@ static value actor_net_reserve_results(value *request)
 {
   value rooted_request = *request;
   CAMLparam1(rooted_request);
-  CAMLlocal4(ok, error, detail, results);
+  CAMLlocal5(ok, error, detail, results, handoff);
   ok = actor_alloc_one(0, Val_unit);
   if (ok == 0) CAMLreturn(0);
   detail = actor_alloc_one(0, Val_unit);
   if (detail == 0) CAMLreturn(0);
   error = actor_alloc_one(1, detail);
   if (error == 0) CAMLreturn(0);
-  results = actor_alloc_two(0, ok, error);
+  handoff = Val_unit;
+  if (Long_val(Field(Field(rooted_request, 1), 0)) == 8) {
+    handoff = actor_alloc_two(0, Val_unit, Field(Field(rooted_request, 1), 2));
+    if (handoff == 0) CAMLreturn(0);
+  }
+  results = actor_try_alloc(3, 0);
+  if (results == 0) CAMLreturn(0);
+  Field(results, 0) = ok;
+  Field(results, 1) = error;
+  Field(results, 2) = handoff;
   *request = rooted_request;
   CAMLreturn(results);
 }
@@ -1560,8 +1622,9 @@ static value actor_net(value request)
     status = caml_actor_io_close(io, owner, handle,
       opcode == 5 ? CAML_ACTOR_IO_SOCKET : CAML_ACTOR_IO_LISTENER);
     break;
-  case 7:
-    status = actor_net_transfer(scheduler, io, owner, handle, destination);
+  case 7: case 8:
+    status = actor_net_transfer(scheduler, io, owner, handle, destination,
+                                Field(results, 2));
     break;
   default:
     goto malformed;
@@ -1569,7 +1632,7 @@ static value actor_net(value request)
 
 finished:
   if (status == CAML_ACTOR_IO_OK) {
-    caml_actor_scheduler_trace_io(scheduler, owner, opcode,
+    caml_actor_scheduler_trace_io(scheduler, owner, opcode == 8 ? 7 : opcode,
       opcode == 0 || opcode == 2 ? result : handle, operation,
       opcode == 3 || opcode == 4 ? result : 0);
     Field(ok, 0) = Val_long(result);
@@ -1592,6 +1655,8 @@ CAMLprim value caml_actor_receive(value inbox)
 #if defined(NATIVE_CODE)
   if (Is_block(inbox) && Tag_val(inbox) == 0 && Wosize_val(inbox) == 2
       && Is_long(Field(inbox, 0))) {
+    if (Long_val(Field(inbox, 0)) == 4)
+      caml_invalid_argument("Actor.receive_or_exit outside an actor world");
     if (Long_val(Field(inbox, 0)) == 3)
       caml_invalid_argument("Actor.Net outside an actor world");
     if (Long_val(Field(inbox, 0)) == 0) {
@@ -1613,6 +1678,8 @@ CAMLprim value caml_actor_receive(value inbox)
   if (!caml_actor_scheduler_is_running()) {
     if (Is_block(inbox) && Tag_val(inbox) == 0 && Wosize_val(inbox) == 2
         && Is_long(Field(inbox, 0))) {
+      if (Long_val(Field(inbox, 0)) == 4)
+        caml_invalid_argument("Actor.receive_or_exit outside an actor world");
       if (Long_val(Field(inbox, 0)) == 3)
         caml_invalid_argument("Actor.Net outside an actor world");
       if (Long_val(Field(inbox, 0)) == 0) {
@@ -1634,7 +1701,8 @@ CAMLprim value caml_actor_receive(value inbox)
         && caml_actor_heap_read_field(inbox, 0, &operation)
         && Is_long(operation)) {
       if (Long_val(operation) == 3) return actor_net(inbox);
-      if (Long_val(operation) == 1) return actor_await_any_exit(inbox);
+      if (Long_val(operation) == 1) return actor_await_any_exit(inbox, 0);
+      if (Long_val(operation) == 4) return actor_await_any_exit(inbox, 1);
       if (Long_val(operation) == 2) {
         value token;
         if (!caml_actor_heap_read_field(inbox, 1, &token)) {

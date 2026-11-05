@@ -7,6 +7,12 @@ Working version
 
 ### Runtime system:
 
+- Actor runtime: add typed root inboxes, combined mailbox/monitor waiting and
+  atomic socket handoff with copied metadata. Include a supervised TCP
+  key/value reference service with bounded resources, restart recovery,
+  deterministic graph/resource fuzzing and external-client soak tests.
+  (Dennis Dang)
+
 - #15049: Add a runtime events lifecycle event EV_PROCESS_CREATE, emitted on
   all platforms when a child process is created by Unix.create_process and the
   functions built on it.

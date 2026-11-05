@@ -123,7 +123,7 @@ actor_primitive_policy[] = {
 #undef CAML_ACTOR_NO_PRIMITIVE
 
 enum actor_wait_kind {
-  WAIT_NONE, WAIT_MAILBOX, WAIT_MONITOR, WAIT_TIMER, WAIT_IO
+  WAIT_NONE, WAIT_MAILBOX, WAIT_MONITOR, WAIT_TIMER, WAIT_IO, WAIT_EVENT
 };
 
 struct caml_actor_slot {
@@ -2030,7 +2030,7 @@ int caml_actor_scheduler_commit_send(
   scheduler->mailbox_messages++;
   scheduler->mailbox_bytes += encoded_bytes;
   if (slot->lifecycle == CAML_ACTOR_LIFECYCLE_BLOCKED
-      && slot->wait_kind == WAIT_MAILBOX) {
+      && (slot->wait_kind == WAIT_MAILBOX || slot->wait_kind == WAIT_EVENT)) {
     slot->wait_kind = WAIT_NONE;
     slot->lifecycle = CAML_ACTOR_LIFECYCLE_RUNNABLE;
     enqueue_tail(scheduler, prepared->target_index);
@@ -2463,7 +2463,8 @@ static void publish_exit_to_monitors(
     if (lookup_slot(scheduler, monitor->watcher_pid, &watcher)
           == CAML_ACTOR_PID_PRESENT
         && watcher->lifecycle == CAML_ACTOR_LIFECYCLE_BLOCKED
-        && watcher->wait_kind == WAIT_MONITOR) {
+        && (watcher->wait_kind == WAIT_MONITOR
+            || watcher->wait_kind == WAIT_EVENT)) {
       uint32_t index =
         (uint32_t)(monitor->watcher_pid & CAML_ACTOR_PID_INDEX_MASK);
       struct caml_actor_slot *mutable_watcher = &scheduler->slots[index];
@@ -2652,6 +2653,10 @@ static int block_for(enum actor_wait_kind kind, uintnat id)
 int caml_actor_scheduler_request_blocked(void)
 {
   return block_for(WAIT_MAILBOX, 0);
+}
+int caml_actor_scheduler_request_event_blocked(void)
+{
+  return block_for(WAIT_EVENT, 0);
 }
 int caml_actor_scheduler_request_monitor_blocked(void)
 {

@@ -62,6 +62,7 @@ part of the current roadmap.
 | Layer 14: supervision | `actor-real/14-supervision`, PR #17 | Complete and published as a stacked draft |
 | Layer 15: timers and scheduler waiting | `codex/15-timers`, PR #18 | Complete and published as a stacked draft |
 | Layer 16: nonblocking TCP | `codex/16-nonblocking-tcp` | Implemented; stacked draft publication gates below |
+| Layer 17: reference service and hardening | `codex/17-reference-service` | Implemented; local acceptance and publication gates below |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -637,26 +638,56 @@ A published draft and successful tests do not substitute for maintainer review.
 
 ### Current next action
 
-After the Layer 16 publication gates pass, build the Layer 17 supervised
-reference service using the owned-socket handoff. Preserve the current root-only
-supervisor boundary: listener restart does not imply cascading worker shutdown.
-The reference service must define and test that policy explicitly.
+The Layer 17 service now exercises owned-socket handoff and explicit root-owned
+worker cleanup. Layer 16 fresh-runner and independent-review gates remain open.
 
 ## Layer 17: reference service and hardening
 
-The acceptance application is a supervised line-oriented TCP key/value
-service with separate modules:
+The normally compiled [reference service](examples/actor-kv/README.md) uses
+separate protocol, state, connection, listener and root-supervisor modules.
+The state actor alone owns a bounded map. The root supervises the listener,
+connection workers and one deadline actor per connection. It derives world
+resource limits from the configured connection cap.
 
-- a root supervisor;
-- a state actor that exclusively owns the map;
-- a listener actor that owns the listening socket;
-- one monitored actor per accepted connection; and
-- protocol request and response values that cross mailboxes normally.
+A worker crash affects one connection. Listener failure cancels and drains
+all workers in that listener epoch before rebinding the same endpoint, while
+the state actor survives. State failure terminates the service rather than
+silently discarding data. A lifetime restart budget bounds listener crash
+loops. Absolute connection leases bound idle peers and slow readers.
 
-The final gate includes concurrent clients, intentional actor crashes, bounded
-restarts, quota exhaustion, disconnect races, resource-leak checks, a pure
-OCaml package canary, fuzzing of wire and resource boundaries, and sustained
-soak testing.
+Application-driven API additions are typed root inboxes, `receive_or_exit`
+(own FIFO mailbox plus owned monitors), and `Net.transfer_with` (fresh socket
+plus copied metadata). Existing primitive names, arities and ownership fences
+are preserved. Ready exits have priority over messages and follow monitor-list
+order; only the selected event is consumed. General I/O/timer wait sets and
+nested supervisor semantics remain deferred.
+
+The application exposed a fixed-port recovery defect: rebinding after live
+connections were drained failed with `EADDRINUSE`. Listener creation now sets
+`SO_REUSEADDR`; a regression test requires recovery on the exact same port and
+another confirms that two live listeners still cannot share that endpoint.
+
+### Validation and remaining gates
+
+[LAYER_17_VALIDATION.md](LAYER_17_VALIDATION.md) records source boundaries,
+commands and actual results. Acceptance includes external concurrent clients,
+fragmentation and pipelining, full maps, admission limits, worker/state/listener
+failures, partial EOF, fixed-port restart, forced write backpressure, deadlines,
+quota failures, runtime gauges and actual OS descriptor cleanup. Seeded parser,
+cyclic graph and resource-schedule fuzz tests complement existing adversarial
+wire/resource fixtures. The pinned Astring package remains a separate canary.
+
+CI includes the external-client suite and short soak on normal and sanitizer
+builds. GitHub Actions is still disabled; hosted platform checks and independent
+maintainer review remain publication gates. This remains an experimental
+single-Domain Linux x86-64 bytecode runtime.
+
+### Current next action
+
+Enable and pass fresh-runner checks on the published tip, obtain independent
+runtime review, then evaluate larger concurrency, larger state heaps and
+longer operational trials using the reference service. Use measured bottlenecks
+to choose optimizations before extending native or parallel execution.
 
 ## Deferred work
 

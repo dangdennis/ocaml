@@ -1,0 +1,71 @@
+{
+  "recorded_on": "2026-11-05",
+  "base_commit": "b1c22b4eea13df7793ecd1508aacd67242c52fab",
+  "environment": "Linux amd64 Docker emulated on macOS arm64",
+  "runtime": "normal",
+  "workload": {
+    "clients": 2,
+    "connection_limit": 4,
+    "map_entry_limit": 8,
+    "commands_per_connection": [
+      "PING",
+      "SET",
+      "GET",
+      "QUIT"
+    ],
+    "latency": "whole connection and four-command round trip",
+    "memory": "peak whole-process RSS, including emulation"
+  },
+  "implementation": {
+    "input": "sorted path + NUL + SHA256(file) + LF",
+    "files": [
+      "examples/actor-kv/kv_connection.ml",
+      "examples/actor-kv/kv_listener.ml",
+      "examples/actor-kv/kv_protocol.ml",
+      "examples/actor-kv/kv_service.ml",
+      "examples/actor-kv/kv_state.ml",
+      "examples/actor-kv/main.ml",
+      "runtime/actor.c",
+      "runtime/actor_io.c",
+      "runtime/actor_scheduler.c",
+      "runtime/caml/actor_scheduler.h",
+      "stdlib/actor.ml",
+      "stdlib/actor.mli"
+    ],
+    "sha256": "ae3d2a708b26ea74f45f68018e8ecceaae51a05d16ef97bb91feedf2835d8146"
+  },
+  "harness": {
+    "input": "sorted path + NUL + SHA256(file) + LF",
+    "files": [
+      "testsuite/actor-service/clients.py",
+      "testsuite/actor-service/protocol_fuzz.ml",
+      "testsuite/actor-service/service_harness.ml",
+      "testsuite/actor-service/service_stubs.c",
+      "testsuite/actor-service/service_unit.ml",
+      "tools/ci/actions/actor-service.sh"
+    ],
+    "sha256": "a3fa863dffd155e7dde41ce9e56bcdfe386150b603919cf171cc86c291fd7ffc"
+  },
+  "results": {
+    "normal": "passed",
+    "restart": "passed",
+    "timeout": "passed",
+    "quota": "passed",
+    "state": "passed",
+    "storm": "passed",
+    "descriptors": "passed",
+    "mailboxes": "passed",
+    "buffers": "passed",
+    "operations": "passed",
+    "soak": {
+      "seconds": 60.001,
+      "connections": 81425,
+      "commands": 325700,
+      "commands_per_second": 5428.26,
+      "connection_roundtrip_ms_p50": 1.46,
+      "connection_roundtrip_ms_p95": 1.815,
+      "connection_roundtrip_ms_p99": 2.092,
+      "peak_process_rss_kib": 14212
+    }
+  }
+}

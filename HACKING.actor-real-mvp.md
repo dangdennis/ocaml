@@ -209,6 +209,8 @@ module Net : sig
   val read : socket -> bytes -> int -> int -> (int, error) result
   val write : socket -> bytes -> int -> int -> (int, error) result
   val transfer : socket -> socket pid -> (unit, error) result
+  val transfer_with : socket -> (socket * 'message) pid -> 'message ->
+    (unit, error) result
   val close : socket -> (unit, error) result
   val close_listener : listener -> (unit, error) result
 end
@@ -237,3 +239,22 @@ runtimes. `actor_net_store.ml` exercises the pointer-free C operation engine;
 combines small heaps, quotas, transfers, PID reuse, supervision and signals.
 The existing actor CI discovers these tests automatically. New primitives and
 arbitrary C_CALLN support were not introduced.
+
+## Layer 17 reference service
+
+`examples/actor-kv/README.md` describes the separately compiled service and its
+explicit lifecycle policy. `tools/ci/actions/actor-service.sh` runs seeded
+parser fuzzing, real external clients, injected failures, descriptor checks and
+a configurable soak. Runtime tests `actor_service_events.ml` and
+`actor_service_fuzz.ml` cover atomic mailbox/monitor waiting, metadata handoff,
+GC, rejection rollback, cyclic graph copying and randomized resource lifetimes.
+
+Root entry is now polymorphic in its inbox message type without changing the
+runtime ABI. `receive_or_exit` uses `caml_actor_receive/1` request
+`(4, (inbox, monitors))`; `Net.transfer_with` uses the existing network request
+with opcode 8 and metadata in the buffer field. The socket/metadata pair and
+result objects are reserved before irreversible transfer. All scheduler calls
+retain the existing root-free C boundary. No primitive allowlist was widened.
+
+See `LAYER_17_VALIDATION.md` for current evidence and limits. The combined
+mailbox/exit wait is deliberately narrower than general I/O/timer selection.
