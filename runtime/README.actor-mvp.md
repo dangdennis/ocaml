@@ -220,6 +220,57 @@ unavailable. Freeze/copy, a safe primitive and opcode subset, independent
 collection, and public lifecycle semantics remain later gates, so PR 4 makes
 neither a public-actor nor a heap-isolation claim.
 
+## PR 5 runtime-fence boundary
+
+PR 5 adds an internal, transactional actor-world fence. Freeze moves through
+`PREPARING`, `FROZEN`, and `THAWING`; it publishes `PREPARING` before doing
+runtime work so nested entry fails as busy. Any failed precondition or pending
+action exception rolls back the partially prepared world. Thaw must run on the
+same Domain. It checks the exact stock-runtime snapshot, reports corruption if
+anything changed, and then clears the fence.
+
+Frozen values are approved by an exact ledger, not by an address-range or
+"not young" test. Registration accepts only canonical stock-major block
+bases. Each entry records the block header and a snapshot of every payload
+word; duplicate registration and thaw verify both. Static atoms remain a
+separate explicit case. Unregistered blocks, interior pointers, malformed
+headers, and changed payloads are rejected.
+
+Pending stock-runtime work present at entry is drained before the world
+becomes `FROZEN`. Work discovered while canonicalizing the host heap, or while
+actors run, remains pending. The actor scheduler and interpreter do not process
+it; it becomes eligible only after actor state is gone and thaw has restored
+the host world.
+
+Between actor slices, frozen-world orchestration is trusted C code. It may use
+non-OCaml storage, but must not invoke OCaml callbacks or allocate in the stock
+minor heap. Stock shared-heap allocation is explicitly fenced while the world
+is frozen.
+
+An actor dispatch temporarily detaches the host C-root (`local_roots`) chain
+and restores the identical pointer after the actor stack and heap are removed.
+Actor allocation uses a nonraising arena attempt. An unsupported allocation
+stops as unsupported, while quota exhaustion becomes a pointer-free,
+actor-local heap-exhausted scheduler result instead of entering stock GC or
+raising through host runtime state.
+
+Mutation opcodes preflight the destination tag, bounds, owner, and right-hand
+side before computing a write address or changing memory. This covers field,
+vector, float-array, byte-string, and `OFFSETREF` writes. Global access,
+object-cache operations, debugger opcodes, and effects fail closed.
+`caml_modify` remains a last-resort checked backstop.
+
+The primitive policy is exact and executable-specific. The only allowed call
+is `C_CALL2` whose resolved function pointer is `caml_int_compare`; the
+primitive index is bounds-checked first. Every other `C_CALL*` is denied before
+entering C.
+
+PR 5 exposes no `Actor` module, accepts no general host closure as actor input,
+and contains no closure-graph copier. `GETGLOBAL`, its push/field variants, and
+`SETGLOBAL` remain denied, so there is no general global access. Public entry
+and closure copying belong to PR 6; any approved global-read surface remains
+a later claim. PR 5 also adds neither mailboxes nor independent collection,
+so it makes no public actor or heap-isolation claim.
 
 ## Isolation invariants
 
@@ -321,7 +372,8 @@ replay divergence, and an `ACTOR_SEED` plus `ACTOR_TRACE` command.
 - PR 2 proves resumable bytecode and safe reduction stops.
 - PR 3 proves disjoint allocation and mandatory owner verification.
 - PR 4 proves deterministic scheduling and stale-PID rejection.
-- PR 5 establishes the runtime safety fence.
+- PR 5 proves the internal freeze/thaw fence, exact frozen-value approval,
+  nonraising actor allocation, and the initial opcode/primitive fence.
 - PR 6 proves transactional actor entry and spawn copying.
 - PR 7 proves pointer-free FIFO messaging.
 - PR 8 proves independent private collection. Only then is `heap-isolated` an
@@ -339,9 +391,10 @@ creating a false-green signal.
 - PR 3: alternating contexts allocate in disjoint ranges; stock-major
   allocation and an injected foreign edge are rejected.
 - PR 4: two CPU-bound actors both progress; stale PIDs never revive.
-- PR 5: frozen global mutation and unsafe primitives fail closed.
-- PR 6: captured refs diverge after spawn; actor entry and copied captures
-  preserve the freeze boundary and safe-language closure.
+- PR 5: freeze/thaw rollback and snapshot checks hold; pending host actions
+  are deferred; fenced writes and unsafe primitives fail before side effects.
+- PR 6: captured refs diverge after spawn; frozen global mutation fails
+  closed; unsupported closure captures publish no actor.
 - PR 7: FIFO wakeup, sender/receiver mutation independence, cycle and alias
   preservation, and transactional rejection of unsupported messages.
 - PR 8: repeated moving GC in actor A neither scans nor changes actor B; all

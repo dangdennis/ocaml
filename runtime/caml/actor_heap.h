@@ -67,9 +67,12 @@ CAMLextern value caml_actor_heap_try_alloc(
 CAMLextern value caml_actor_heap_alloc_or_raise(
   struct caml_actor_heap *heap, mlsize_t wosize, tag_t tag,
   reserved_t reserved);
+CAMLextern int caml_actor_heap_allocation_supported(
+  mlsize_t wosize, tag_t tag, reserved_t reserved);
 
 CAMLextern int caml_actor_heap_owns_value(
   const struct caml_actor_heap *heap, value value);
+CAMLextern int caml_actor_heap_contains_address(value candidate);
 CAMLextern uintnat caml_actor_heap_owner(
   const struct caml_actor_heap *heap);
 CAMLextern mlsize_t caml_actor_heap_quota_words(
@@ -85,6 +88,18 @@ CAMLextern void caml_actor_heap_note_shared_bypass(
 
 CAMLextern enum caml_actor_heap_store_status caml_actor_heap_check_store(
   const volatile value *field, value new_value);
+CAMLextern enum caml_actor_heap_store_status
+caml_actor_heap_check_field_store(value block, mlsize_t field,
+                                  value new_value);
+CAMLextern enum caml_actor_heap_store_status
+caml_actor_heap_check_vector_store(value block, mlsize_t field,
+                                   value new_value);
+CAMLextern enum caml_actor_heap_store_status
+caml_actor_heap_check_bytes_store(value block, mlsize_t byte);
+CAMLextern enum caml_actor_heap_store_status
+caml_actor_heap_check_double_store(value block, mlsize_t field);
+CAMLextern enum caml_actor_heap_store_status
+caml_actor_heap_check_offsetref(value block);
 CAMLextern struct caml_actor_heap_verify_result caml_actor_heap_verify(
   const struct caml_actor_heap *heap);
 

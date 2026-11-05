@@ -18,6 +18,7 @@
 #include <stdlib.h>
 
 #include "caml/actor_heap.h"
+#include "caml/actor_world.h"
 #include "caml/address_class.h"
 #include "caml/codefrag.h"
 #include "caml/domain.h"
@@ -113,6 +114,12 @@ static int actor_tag_supported(mlsize_t wosize, tag_t tag,
   default:
     return 0;
   }
+}
+
+int caml_actor_heap_allocation_supported(mlsize_t wosize, tag_t tag,
+                                         reserved_t reserved)
+{
+  return actor_tag_supported(wosize, tag, reserved);
 }
 
 static int range_contains(const struct caml_actor_heap *heap,
@@ -271,6 +278,9 @@ static enum caml_actor_heap_verify_error verify_edge(
   }
 
   if (canonical_atom(target)) return CAML_ACTOR_HEAP_VERIFY_OK;
+  if (caml_actor_world_value_is_frozen(target)) {
+    return CAML_ACTOR_HEAP_VERIFY_OK;
+  }
   if (Is_young(target)) return CAML_ACTOR_HEAP_VERIFY_HOST_YOUNG_EDGE;
   return CAML_ACTOR_HEAP_VERIFY_UNAPPROVED_EXTERNAL_EDGE;
 }
@@ -545,6 +555,15 @@ int caml_actor_heap_owns_value(const struct caml_actor_heap *heap,
   return lookup.heap == heap && lookup.exact && !lookup.malformed;
 }
 
+int caml_actor_heap_contains_address(value candidate)
+{
+  struct actor_value_lookup lookup;
+
+  if (!Is_block(candidate)) return 0;
+  lookup_actor_value(candidate, &lookup);
+  return lookup.heap != NULL;
+}
+
 uintnat caml_actor_heap_owner(const struct caml_actor_heap *heap)
 {
   return heap->owner;
@@ -575,11 +594,129 @@ void caml_actor_heap_note_shared_bypass(struct caml_actor_heap *heap)
   heap->shared_bypasses++;
 }
 
+static int actor_store_value_supported(struct caml_actor_heap *heap,
+                                       value new_value)
+{
+  struct actor_value_lookup lookup;
+
+  if (Is_long(new_value)) return 1;
+  if (new_value == 0) return 0;
+  lookup_actor_value(new_value, &lookup);
+  if (lookup.heap != NULL) {
+    return lookup.heap == heap && lookup.exact && !lookup.malformed;
+  }
+  return canonical_atom(new_value)
+    || caml_actor_world_value_is_frozen(new_value);
+}
+
+static int current_actor_block(value block, value *canonical,
+                               mlsize_t *wosize, tag_t *tag)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  struct actor_value_lookup lookup;
+
+  if (heap == NULL || !Is_block(block)) return 0;
+  lookup_actor_value(block, &lookup);
+  if (lookup.heap != heap || !lookup.exact || lookup.malformed
+      || lookup.canonical != block) {
+    return 0;
+  }
+  *canonical = lookup.canonical;
+  *wosize = Wosize_val(lookup.canonical);
+  *tag = Tag_val(lookup.canonical);
+  return 1;
+}
+
+enum caml_actor_heap_store_status caml_actor_heap_check_field_store(
+  value block, mlsize_t field, value new_value)
+{
+  struct caml_actor_heap *heap = caml_actor_heap_current();
+  value canonical;
+  mlsize_t wosize;
+  tag_t tag;
+
+  if (heap == NULL) return CAML_ACTOR_HEAP_STORE_INACTIVE;
+  if (!current_actor_block(block, &canonical, &wosize, &tag)
+      || tag >= Forcing_tag || field >= wosize
+      || !actor_store_value_supported(heap, new_value)) {
+    return CAML_ACTOR_HEAP_STORE_INVALID;
+  }
+  return CAML_ACTOR_HEAP_STORE_OK;
+}
+
+enum caml_actor_heap_store_status caml_actor_heap_check_vector_store(
+  value block, mlsize_t field, value new_value)
+{
+  value canonical;
+  mlsize_t wosize;
+  tag_t tag;
+
+  if (caml_actor_heap_current() == NULL) {
+    return CAML_ACTOR_HEAP_STORE_INACTIVE;
+  }
+  if (!current_actor_block(block, &canonical, &wosize, &tag)
+      || tag != 0 || field >= wosize) {
+    return CAML_ACTOR_HEAP_STORE_INVALID;
+  }
+  return caml_actor_heap_check_field_store(block, field, new_value);
+}
+
+enum caml_actor_heap_store_status caml_actor_heap_check_bytes_store(
+  value block, mlsize_t byte)
+{
+  value canonical;
+  mlsize_t wosize;
+  tag_t tag;
+
+  if (caml_actor_heap_current() == NULL) {
+    return CAML_ACTOR_HEAP_STORE_INACTIVE;
+  }
+  if (!current_actor_block(block, &canonical, &wosize, &tag)
+      || tag != String_tag || byte >= caml_string_length(canonical)) {
+    return CAML_ACTOR_HEAP_STORE_INVALID;
+  }
+  return CAML_ACTOR_HEAP_STORE_OK;
+}
+
+enum caml_actor_heap_store_status caml_actor_heap_check_double_store(
+  value block, mlsize_t field)
+{
+  value canonical;
+  mlsize_t wosize;
+  tag_t tag;
+
+  if (caml_actor_heap_current() == NULL) {
+    return CAML_ACTOR_HEAP_STORE_INACTIVE;
+  }
+  if (!current_actor_block(block, &canonical, &wosize, &tag)
+      || tag != Double_array_tag
+      || field >= wosize / Double_wosize) {
+    return CAML_ACTOR_HEAP_STORE_INVALID;
+  }
+  return CAML_ACTOR_HEAP_STORE_OK;
+}
+
+enum caml_actor_heap_store_status caml_actor_heap_check_offsetref(
+  value block)
+{
+  value canonical;
+  mlsize_t wosize;
+  tag_t tag;
+
+  if (caml_actor_heap_current() == NULL) {
+    return CAML_ACTOR_HEAP_STORE_INACTIVE;
+  }
+  if (!current_actor_block(block, &canonical, &wosize, &tag)
+      || tag != 0 || wosize != 1 || !Is_long(Field(canonical, 0))) {
+    return CAML_ACTOR_HEAP_STORE_INVALID;
+  }
+  return CAML_ACTOR_HEAP_STORE_OK;
+}
+
 enum caml_actor_heap_store_status caml_actor_heap_check_store(
   const volatile value *field, value new_value)
 {
   struct caml_actor_heap *heap = caml_actor_heap_current();
-  struct actor_value_lookup lookup;
   int target_is_field = 0;
 
   if (heap == NULL) return CAML_ACTOR_HEAP_STORE_INACTIVE;
@@ -602,16 +739,8 @@ enum caml_actor_heap_store_status caml_actor_heap_check_store(
     cursor += Whsize_wosize(wosize);
   }
   if (!target_is_field) return CAML_ACTOR_HEAP_STORE_INVALID;
-  if (Is_long(new_value)) return CAML_ACTOR_HEAP_STORE_OK;
-  if (new_value == 0) return CAML_ACTOR_HEAP_STORE_INVALID;
-
-  lookup_actor_value(new_value, &lookup);
-  if (lookup.heap != NULL) {
-    return lookup.heap == heap && lookup.exact && !lookup.malformed
-      ? CAML_ACTOR_HEAP_STORE_OK : CAML_ACTOR_HEAP_STORE_INVALID;
-  }
-  if (canonical_atom(new_value)) return CAML_ACTOR_HEAP_STORE_OK;
-  return CAML_ACTOR_HEAP_STORE_INVALID;
+  return actor_store_value_supported(heap, new_value)
+    ? CAML_ACTOR_HEAP_STORE_OK : CAML_ACTOR_HEAP_STORE_INVALID;
 }
 
 struct caml_actor_heap_verify_result caml_actor_heap_verify(
