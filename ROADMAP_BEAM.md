@@ -58,6 +58,9 @@ part of the current roadmap.
 | Layer 10: primitive capabilities and core Stdlib compatibility | `actor-real/10-primitive-capabilities`, PR #13 | Complete and published as a stacked draft |
 | Layer 11: elastic heaps and configurable limits | `actor-real/11-elastic-heaps`, PR #14 | Complete and published as a stacked draft |
 | Layer 12: structured exits and monitors | `actor-real/12-structured-exits`, PR #15 | Complete and published as a stacked draft |
+| Layer 13: deterministic tracing | `actor-real/13-tracing-visualization`, PR #16 | Complete and published as a stacked draft |
+| Layer 14: supervision | `actor-real/14-supervision`, PR #17 | Complete and published as a stacked draft |
+| Layer 15: timers and scheduler waiting | `codex/15-timers`, PR #18 | Complete and published as a stacked draft |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -535,13 +538,64 @@ waiting.
 
 ## Layer 15: timers and scheduler event waiting
 
-Add scheduler-owned monotonic timers and cancellation. Waiting on a timer or
-external event must not be diagnosed as actor deadlock. Tests must use a
-controllable clock or deterministic seam rather than wall-clock sleeps.
+### Implemented contract
 
-The scheduler should then wait for the earliest timer or I/O event when there
-is no runnable actor, while retaining deterministic replay for injected event
-sequences.
+`Actor.Timer.after`, `await`, `cancel`, and `sleep` provide owned one-shot timers
+with checked nanosecond deadlines, cancellation, and recoverable quota errors.
+`max_timers` defaults to 65,536; pending and ready unconsumed timers remain
+charged. Successful lifecycle operations allocate their actor result before
+publishing or consuming timer state. Timer records contain no OCaml pointers.
+
+Mailbox, monitor, and timer waits are distinct. The scheduler promotes due
+records in bounded, stable batches, including under runnable CPU load. Only
+an awaited timer that can wake a live actor suppresses deadlock. Linux host
+waiting uses monotonic absolute deadlines; fake time drives semantic tests.
+Clock failures and repeated incomplete waits fail the world with cleanup.
+No actor primitive performs an OS wait, and the bootstrap primitive names and
+supervisor's injected clock remain unchanged.
+
+### Milestone tracker
+
+- [x] Bounded timer storage and deterministic clock/wait seam.
+- [x] Transactional registration, consumption, cancellation, and owner cleanup.
+- [x] Owned public API and distinct mailbox/monitor/timer wait reasons.
+- [x] Timer-aware idle waiting, stable expiry, and runnable-load progress.
+- [x] Duration rounding, quota, clock failure, interruption, and reuse tests.
+- [x] Schema v2 timer tracing with v1 viewer compatibility.
+- [x] Complete sanitizer, compatibility, benchmark, hygiene, and fresh-runner gates.
+- [x] Publish the stacked Layer 15 draft with exact-tip implementation evidence.
+
+### Validation checkpoint
+
+Layer 15 closed at implementation tip `bd1376229a`, stacked on the Layer 14
+base `41d885448c` in draft PR #18. Fresh-runner Actor Runtime (`34016168375`),
+Hygiene (`34016168400`), full Build (`34016168404`), and MSVC (`34016168396`)
+workflows passed at that exact tip: 20 checks passed and eight event-specific
+checks skipped as expected.
+
+Normal, debug, instrumented, ASan, and UBSan actor suites each passed 39 tests
+with one expected native-runtime skip, both locally and on fresh runners.
+The Stdlib corpus, tooling suites, pinned Astring canary, actor/timer benchmark
+smoke, callback/backtrace/effects regressions, dependency generation, and manual
+and hygiene checks passed. The timer-heavy benchmark is a local gate; existing
+CI discovers all four new timer tests. Viewer checks cover trace schemas v1/v2,
+64-bit timer precision, cleanup, and incomplete/unsupported traces.
+
+Deterministic tests cover exact duration rounding, quota rollback, original
+deadlines across interrupted waits, owner rejection, 200-generation reuse,
+supervision, and zero live timer charges after cleanup. Signal tests cover
+pending host signals and arrival immediately before the kernel wait. Linux
+waiting uses `ppoll` with atomic signal-mask restoration, preserving the
+original monotonic deadline and deferring OCaml handlers until after thaw.
+
+The final documentation publication is checked again at its own PR head.
+
+### Current next action
+
+Begin Layer 16 owned nonblocking TCP over the host event-wait seam. Preserve
+timer deadlines, cancellation priority, and owner cleanup while adding socket
+readiness to the idle backend. Public general wait sets,
+selective receive, timer callbacks/messages, and periodic timers remain deferred.
 
 ## Layer 16: scheduler-owned nonblocking I/O
 

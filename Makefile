@@ -1209,6 +1209,7 @@ runtime_COMMON_C_SOURCES = \
   actor_copy \
   actor_heap \
   actor_scheduler \
+  actor_timer \
   actor_wire \
   actor_world \
   array \
