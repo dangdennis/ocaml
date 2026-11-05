@@ -16,9 +16,9 @@ service. Its modules are introduced incrementally in the runtime actor tests:
 - one monitored actor will own each accepted connection; and
 - the root supervisor will enforce a bounded one-for-one restart policy.
 
-`real_program_contract.ml` is the first executable slice. On this baseline it
-proves that a separately compiled module is rejected precisely at `GETGLOBAL`.
-Layer 9 changes that same contract to require successful execution.
+`real_program_contract.ml` is the first executable slice. Layer 8 recorded the
+old precise `GETGLOBAL` rejection. Layer 9 now requires a separately compiled
+protocol module to execute successfully through the frozen global image.
 
 ## Frozen global image
 
@@ -28,9 +28,27 @@ code may not execute `SETGLOBAL`, mutate any block reachable from the frozen
 image, or observe a global registered after the world freezes. Mutable state
 must be allocated in an actor heap or copied into a child at spawn.
 
-The runtime remains authoritative. `ocamlactorcheck` is an advisory preflight
-that reports rejected instructions, primitive capabilities, and identifiable
-mutable-global risks without running the program.
+Layer 9 admits `GETGLOBAL`, `PUSHGETGLOBAL`, `GETGLOBALFIELD`, and
+`PUSHGETGLOBALFIELD` only through the validated snapshot. Subsequent field and
+closure-environment reads are checked against the same image. Ordinary scanned
+immutable graphs, strings, floats, double arrays, and same-image closures are
+readable; custom and abstract blocks, weak values, ephemerons, finalizable
+values, and other runtime-specific layouts remain unreadable. Inline mutation
+opcodes and mutating primitives still fail before changing host state.
+
+Non-immediate values read from the frozen image are not Layer 9 mailbox values.
+The wire encoder accepts message graphs owned by the sending actor (plus
+immediates and canonical atoms), so trying to send a frozen string or data
+graph returns `Unsupported_message` without enqueueing an envelope. A later
+compatibility layer may define copying for supported frozen message graphs.
+
+The runtime remains authoritative. The current `ocamlactorcheck` is a
+first-pass advisory inventory for compiler-produced bytecode: it lists linked
+global reads and writes and `C_CALL*` sites with symbol or primitive names and
+arities. Primitive findings remain `unclassified`. It does not analyze
+reachability or branch targets, validate frozen value graphs, classify
+primitive capabilities, identify all mutation paths, or prove that an
+executable is actor-compatible.
 
 ## Primitive capabilities and diagnostics
 

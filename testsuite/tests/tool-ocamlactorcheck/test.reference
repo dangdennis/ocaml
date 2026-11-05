@@ -1,0 +1,22 @@
+ocamlactorcheck: advisory bytecode inventory for actorcheck-fixture.byte
+pc=7 opcode=PUSHGETGLOBAL global=12 symbol=<unnamed> classification=global-read
+pc=20 opcode=SETGLOBAL global=13 symbol="Fixture_helper" classification=initialization-or-actor-forbidden
+pc=24 opcode=GETGLOBAL global=13 symbol="Fixture_helper" classification=global-read
+pc=28 opcode=GETGLOBALFIELD global=13 symbol="Fixture_helper" field=0 classification=global-read
+pc=40 opcode=PUSHGETGLOBAL global=13 symbol="Fixture_helper" classification=global-read
+pc=42 opcode=PUSHGETGLOBALFIELD global=13 symbol="Fixture_helper" field=0 classification=global-read
+pc=47 opcode=PUSHGETGLOBAL global=13 symbol="Fixture_helper" classification=global-read
+pc=51 opcode=PUSHGETGLOBALFIELD global=13 symbol="Fixture_helper" field=0 classification=global-read
+pc=54 opcode=PUSHGETGLOBALFIELD global=13 symbol="Fixture_helper" field=2 classification=global-read
+pc=58 opcode=PUSHGETGLOBALFIELD global=13 symbol="Fixture_helper" field=1 classification=global-read
+pc=66 opcode=C_CALL1 primitive=255:"caml_int_compare" arity=1 classification=unclassified
+pc=70 opcode=C_CALL2 primitive=255:"caml_int_compare" arity=2 classification=unclassified
+pc=75 opcode=C_CALL3 primitive=255:"caml_int_compare" arity=3 classification=unclassified
+pc=82 opcode=C_CALL4 primitive=255:"caml_int_compare" arity=4 classification=unclassified
+pc=91 opcode=C_CALL5 primitive=255:"caml_int_compare" arity=5 classification=unclassified
+pc=102 opcode=C_CALLN primitive=255:"caml_int_compare" arity=6 classification=unclassified
+pc=132 opcode=SETGLOBAL global=14 symbol="Fixture" classification=initialization-or-actor-forbidden
+notice: runtime actor enforcement remains authoritative
+ocamlactorcheck: malformed bytecode at pc=134: truncated GETGLOBAL global operand
+ocamlactorcheck: malformed bytecode DATA section root is not an array
+ocamlactorcheck: malformed bytecode SYMB section root is not a global map
