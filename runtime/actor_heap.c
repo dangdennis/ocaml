@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "caml/actor_heap.h"
 #include "caml/actor_world.h"
@@ -26,20 +27,25 @@
 #include "caml/fail.h"
 #include "caml/misc.h"
 #include "caml/platform.h"
+#include "caml/roots.h"
 #include "caml/shared_heap.h"
 
 struct caml_actor_heap {
   uintnat owner;
   char *mapping;
   uintnat mapping_bytes;
-  value *data_start;
-  value *data_end;
+  value *data_start[2];
+  value *data_end[2];
   value *cursor;
-  header_t *shadow_headers;
+  header_t *shadow_headers[2];
+  value *forwarding;
+  value *worklist;
   mlsize_t quota_words;
   mlsize_t used_words;
   uintnat blocks;
   uintnat shared_bypasses;
+  uintnat collections;
+  unsigned active_space;
   int active;
   struct caml_actor_heap *next;
 };
@@ -52,6 +58,24 @@ struct actor_value_lookup {
   value canonical;
   int exact;
   int malformed;
+};
+
+struct actor_space_lookup {
+  value base;
+  mlsize_t infix_offset;
+  mlsize_t header_offset;
+  int exact;
+};
+
+struct actor_gc_context {
+  struct caml_actor_heap *heap;
+  unsigned from_space;
+  unsigned to_space;
+  value *to_cursor;
+  mlsize_t live_words;
+  uintnat live_blocks;
+  uintnat work_count;
+  int valid;
 };
 
 static int actor_heap_registered(const struct caml_actor_heap *candidate)
@@ -130,22 +154,33 @@ static int range_contains(const struct caml_actor_heap *heap,
   return address >= start && address < end;
 }
 
+static int space_contains(const struct caml_actor_heap *heap,
+                          unsigned space, uintptr_t address)
+{
+  return address >= (uintptr_t)heap->data_start[space]
+    && address < (uintptr_t)heap->data_end[space];
+}
+
 static enum caml_actor_heap_verify_error validate_layout(
   const struct caml_actor_heap *heap)
 {
   value *cursor = heap->cursor;
+  unsigned space = heap->active_space;
   uintnat blocks = 0;
 
-  if (cursor < heap->data_start || cursor > heap->data_end
-      || (mlsize_t)(heap->data_end - cursor) != heap->used_words) {
+  if (space > 1
+      || cursor < heap->data_start[space]
+      || cursor > heap->data_end[space]
+      || (mlsize_t)(heap->data_end[space] - cursor)
+           != heap->used_words) {
     return CAML_ACTOR_HEAP_VERIFY_MALFORMED;
   }
 
-  while (cursor < heap->data_end) {
-    mlsize_t remaining = heap->data_end - cursor;
-    mlsize_t offset = cursor - heap->data_start;
+  while (cursor < heap->data_end[space]) {
+    mlsize_t remaining = heap->data_end[space] - cursor;
+    mlsize_t offset = cursor - heap->data_start[space];
     header_t header = Hd_hp(cursor);
-    header_t expected = heap->shadow_headers[offset];
+    header_t expected = heap->shadow_headers[space][offset];
     mlsize_t wosize;
 
     if (expected == 0 || header != expected) {
@@ -164,7 +199,7 @@ static enum caml_actor_heap_verify_error validate_layout(
     blocks++;
   }
 
-  if (cursor != heap->data_end || blocks != heap->blocks) {
+  if (cursor != heap->data_end[space] || blocks != heap->blocks) {
     return CAML_ACTOR_HEAP_VERIFY_MALFORMED;
   }
   return CAML_ACTOR_HEAP_VERIFY_OK;
@@ -221,12 +256,34 @@ static void lookup_actor_value(value candidate,
     if (!range_contains(heap, address)) continue;
 
     lookup->heap = heap;
+    if (heap->active_space > 1) {
+      lookup->malformed = 1;
+      break;
+    }
+    if (space_contains(heap, heap->active_space, address)) {
+      volatile header_t *header = Hp_val(candidate);
+
+      if ((value *)header >= heap->data_start[heap->active_space]
+          && (value *)header < heap->data_end[heap->active_space]) {
+        mlsize_t offset = (value *)header
+          - heap->data_start[heap->active_space];
+        header_t expected =
+          heap->shadow_headers[heap->active_space][offset];
+
+        if (expected != 0 && *header == expected) {
+          lookup->canonical = candidate;
+          lookup->exact = 1;
+          break;
+        }
+      }
+    }
     if (validate_layout(heap) != CAML_ACTOR_HEAP_VERIFY_OK) {
       lookup->malformed = 1;
       break;
     }
 
-    for (value *cursor = heap->cursor; cursor < heap->data_end; ) {
+    for (value *cursor = heap->cursor;
+         cursor < heap->data_end[heap->active_space]; ) {
       mlsize_t wosize = Wosize_hp(cursor);
       value base = Val_hp(cursor);
 
@@ -250,6 +307,237 @@ static int canonical_atom(value candidate)
     if (candidate == Atom((tag_t)tag)) return 1;
   }
   return 0;
+}
+
+static void lookup_space_value(const struct caml_actor_heap *heap,
+                               unsigned space, value candidate,
+                               struct actor_space_lookup *lookup)
+{
+  volatile header_t *header;
+
+  lookup->base = 0;
+  lookup->infix_offset = 0;
+  lookup->header_offset = 0;
+  lookup->exact = 0;
+  if (!Is_block(candidate)
+      || !space_contains(heap, space, (uintptr_t)candidate)) {
+    return;
+  }
+
+  header = Hp_val(candidate);
+  if ((value *)header >= heap->data_start[space]
+      && (value *)header < heap->data_end[space]) {
+    mlsize_t offset = (value *)header - heap->data_start[space];
+
+    if (heap->shadow_headers[space][offset] != 0
+        && Val_hp((value *)header) == candidate) {
+      lookup->base = candidate;
+      lookup->header_offset = offset;
+      lookup->exact = 1;
+      return;
+    }
+  }
+
+  for (value *cursor = heap->cursor;
+       space == heap->active_space
+         && cursor < heap->data_end[space]; ) {
+    mlsize_t wosize = Wosize_hp(cursor);
+    value base = Val_hp(cursor);
+
+    if (Tag_hp(cursor) == Closure_tag
+        && valid_infix_pointer(base, wosize, candidate)) {
+      lookup->base = base;
+      lookup->infix_offset = candidate - base;
+      lookup->header_offset = cursor - heap->data_start[space];
+      lookup->exact = 1;
+      return;
+    }
+    cursor += Whsize_wosize(wosize);
+  }
+}
+
+static int gc_root_valid(const struct caml_actor_heap *heap, value root)
+{
+  struct actor_space_lookup local;
+
+  if (Is_long(root) || canonical_atom(root)) return 1;
+  lookup_space_value(heap, heap->active_space, root, &local);
+  if (local.exact) return 1;
+  return caml_actor_world_value_is_frozen(root);
+}
+
+static void validate_gc_root(void *data, value root,
+                             volatile value *location)
+{
+  struct actor_gc_context *context = data;
+
+  (void)location;
+  if (context->valid && !gc_root_valid(context->heap, root)) {
+    context->valid = 0;
+  }
+}
+
+static value gc_copy_block(struct actor_gc_context *context,
+                           const struct actor_space_lookup *source)
+{
+  struct caml_actor_heap *heap = context->heap;
+  value forwarded = heap->forwarding[source->header_offset];
+  header_t header;
+  mlsize_t wosize;
+  mlsize_t whsize;
+  mlsize_t target_offset;
+  value target;
+
+  if (forwarded != 0) return forwarded;
+  header = heap->shadow_headers[context->from_space]
+                               [source->header_offset];
+  if (header == 0 || Hd_val(source->base) != header) {
+    context->valid = 0;
+    return 0;
+  }
+  wosize = Wosize_hd(header);
+  whsize = Whsize_wosize(wosize);
+  if (whsize > (mlsize_t)(
+        context->to_cursor - heap->data_start[context->to_space])
+      || context->work_count >= heap->quota_words) {
+    context->valid = 0;
+    return 0;
+  }
+  context->to_cursor -= whsize;
+  target_offset = context->to_cursor - heap->data_start[context->to_space];
+  Hd_hp(context->to_cursor) = header;
+  heap->shadow_headers[context->to_space][target_offset] = header;
+  target = Val_hp(context->to_cursor);
+  memcpy(Op_val(target), Op_val(source->base), Bsize_wsize(wosize));
+  heap->forwarding[source->header_offset] = target;
+  heap->worklist[context->work_count++] = target;
+  context->live_words += whsize;
+  context->live_blocks++;
+  return target;
+}
+
+static void forward_gc_root(void *data, value root,
+                            volatile value *location)
+{
+  struct actor_gc_context *context = data;
+  struct actor_space_lookup source;
+  value target;
+
+  if (!context->valid || Is_long(root) || canonical_atom(root)) return;
+  lookup_space_value(
+    context->heap, context->from_space, root, &source);
+  if (!source.exact && caml_actor_world_value_is_frozen(root)) return;
+  if (!source.exact) {
+    context->valid = 0;
+    return;
+  }
+  target = gc_copy_block(context, &source);
+  if (target == 0) return;
+  *location = target + source.infix_offset;
+}
+
+static void scan_gc_block(struct actor_gc_context *context, value block)
+{
+  mlsize_t wosize = Wosize_val(block);
+  tag_t tag = Tag_val(block);
+  mlsize_t first = 0;
+
+  if (tag == Closure_tag) {
+    value info = Closinfo_val(block);
+
+    if (!Is_long(info)) {
+      context->valid = 0;
+      return;
+    }
+    first = Start_env_closinfo(info);
+    if (first < 2 || first > wosize || (first - 2) % 3 != 0) {
+      context->valid = 0;
+      return;
+    }
+  } else if (tag >= Forcing_tag) {
+    return;
+  }
+  for (mlsize_t field = first;
+       context->valid && field < wosize; field++) {
+    forward_gc_root(context, Field(block, field), &Field(block, field));
+  }
+}
+
+int caml_actor_heap_collect(struct caml_actor_heap *heap)
+{
+  struct caml_actor_heap_verify_result verification;
+  struct actor_gc_context context;
+  caml_domain_state *domain = Caml_state_opt;
+
+  if (heap == NULL || domain == NULL || domain->actor_heap != heap
+      || !heap->active || !caml_domain_alone()
+      || !caml_actor_world_is_frozen()) {
+    return 0;
+  }
+  verification = caml_actor_heap_verify(heap);
+  if (verification.error != CAML_ACTOR_HEAP_VERIFY_OK) return 0;
+
+  memset(&context, 0, sizeof(context));
+  context.heap = heap;
+  context.from_space = heap->active_space;
+  context.to_space = 1 - heap->active_space;
+  context.to_cursor = heap->data_end[context.to_space];
+  context.valid = 1;
+  caml_do_local_roots(
+    validate_gc_root, 0, &context,
+    domain->local_roots, domain->current_stack, domain->gc_regs);
+  if (!context.valid) return 0;
+
+  memset(heap->shadow_headers[context.to_space], 0,
+         heap->quota_words * sizeof(*heap->shadow_headers[0]));
+  memset(heap->forwarding, 0,
+         heap->quota_words * sizeof(*heap->forwarding));
+  caml_do_local_roots(
+    forward_gc_root, 0, &context,
+    domain->local_roots, domain->current_stack, domain->gc_regs);
+  for (uintnat index = 0;
+       context.valid && index < context.work_count; index++) {
+    scan_gc_block(&context, heap->worklist[index]);
+  }
+  if (!context.valid) {
+    caml_fatal_error("actor collector failed after root rewriting");
+  }
+
+  memset(heap->shadow_headers[context.from_space], 0,
+         heap->quota_words * sizeof(*heap->shadow_headers[0]));
+  heap->active_space = context.to_space;
+  heap->cursor = context.to_cursor;
+  heap->used_words = context.live_words;
+  heap->blocks = context.live_blocks;
+  heap->collections++;
+  verification = caml_actor_heap_verify(heap);
+  if (verification.error != CAML_ACTOR_HEAP_VERIFY_OK) {
+    caml_fatal_error("actor collector produced an invalid heap");
+  }
+  context.valid = 1;
+  caml_do_local_roots(
+    validate_gc_root, 0, &context,
+    domain->local_roots, domain->current_stack, domain->gc_regs);
+  if (!context.valid) {
+    caml_fatal_error("actor collector left a stale root");
+  }
+  return 1;
+}
+
+int caml_actor_heap_reserve(struct caml_actor_heap *heap,
+                            mlsize_t words)
+{
+  if (heap == NULL || Caml_state_opt == NULL
+      || Caml_state_opt->actor_heap != heap || !heap->active
+      || words > heap->quota_words) {
+    return 0;
+  }
+  if (heap->used_words <= heap->quota_words
+      && words <= heap->quota_words - heap->used_words) {
+    return 1;
+  }
+  return caml_actor_heap_collect(heap)
+    && words <= heap->quota_words - heap->used_words;
 }
 
 static enum caml_actor_heap_verify_error verify_edge(
@@ -349,7 +637,9 @@ struct caml_actor_heap *caml_actor_heap_create(uintnat owner,
   uintnat guards_bytes;
   uintnat mapping_bytes;
   char *mapping;
-  header_t *shadow_headers;
+  header_t *shadow_headers[2] = { NULL, NULL };
+  value *forwarding = NULL;
+  value *worklist = NULL;
 
   if (!actor_runtime_supported()
       || Caml_state_opt == NULL || !caml_domain_alone()
@@ -361,45 +651,56 @@ struct caml_actor_heap *caml_actor_heap_create(uintnat owner,
   quota_bytes = Bsize_wsize(quota_words);
   committed_bytes = caml_mem_round_up_pages(quota_bytes);
   if (committed_bytes < quota_bytes
-      || mul_overflows_uintnat(2, caml_plat_pagesize)) {
+      || mul_overflows_uintnat(3, caml_plat_pagesize)
+      || mul_overflows_uintnat(2, committed_bytes)) {
     return NULL;
   }
-  guards_bytes = 2 * caml_plat_pagesize;
-  if (add_overflows_uintnat(committed_bytes, guards_bytes)) return NULL;
-  mapping_bytes = committed_bytes + guards_bytes;
+  guards_bytes = 3 * caml_plat_pagesize;
+  if (add_overflows_uintnat(2 * committed_bytes, guards_bytes)) return NULL;
+  mapping_bytes = 2 * committed_bytes + guards_bytes;
 
   heap = malloc(sizeof(*heap));
   if (heap == NULL) return NULL;
-  shadow_headers = calloc(quota_words, sizeof(*shadow_headers));
-  if (shadow_headers == NULL) {
-    free(heap);
-    return NULL;
+  for (unsigned space = 0; space < 2; space++) {
+    shadow_headers[space] = calloc(
+      quota_words, sizeof(*shadow_headers[space]));
+    if (shadow_headers[space] == NULL) goto metadata_failed;
   }
+  forwarding = calloc(quota_words, sizeof(*forwarding));
+  worklist = calloc(quota_words, sizeof(*worklist));
+  if (forwarding == NULL || worklist == NULL) goto metadata_failed;
   mapping = caml_mem_map(mapping_bytes, 1);
   if (mapping == NULL) {
-    free(shadow_headers);
-    free(heap);
-    return NULL;
+    goto metadata_failed;
   }
   if (caml_mem_commit(mapping + caml_plat_pagesize,
-                      committed_bytes) == NULL) {
+                      committed_bytes) == NULL
+      || caml_mem_commit(
+           mapping + 2 * caml_plat_pagesize + committed_bytes,
+           committed_bytes) == NULL) {
     caml_mem_unmap(mapping, mapping_bytes);
-    free(shadow_headers);
-    free(heap);
-    return NULL;
+    goto metadata_failed;
   }
 
   heap->owner = owner;
   heap->mapping = mapping;
   heap->mapping_bytes = mapping_bytes;
-  heap->data_start = (value *)(mapping + caml_plat_pagesize);
-  heap->data_end = heap->data_start + quota_words;
-  heap->cursor = heap->data_end;
-  heap->shadow_headers = shadow_headers;
+  heap->data_start[0] = (value *)(mapping + caml_plat_pagesize);
+  heap->data_start[1] = (value *)(
+    mapping + 2 * caml_plat_pagesize + committed_bytes);
+  for (unsigned space = 0; space < 2; space++) {
+    heap->data_end[space] = heap->data_start[space] + quota_words;
+    heap->shadow_headers[space] = shadow_headers[space];
+  }
+  heap->active_space = 0;
+  heap->cursor = heap->data_end[0];
+  heap->forwarding = forwarding;
+  heap->worklist = worklist;
   heap->quota_words = quota_words;
   heap->used_words = 0;
   heap->blocks = 0;
   heap->shared_bypasses = 0;
+  heap->collections = 0;
   heap->active = 0;
 
   caml_plat_lock_non_blocking(&actor_heaps_lock);
@@ -408,7 +709,10 @@ struct caml_actor_heap *caml_actor_heap_create(uintnat owner,
     if (other->owner == owner) {
       caml_plat_unlock(&actor_heaps_lock);
       caml_mem_unmap(mapping, mapping_bytes);
-      free(shadow_headers);
+      free(worklist);
+      free(forwarding);
+      free(shadow_headers[1]);
+      free(shadow_headers[0]);
       free(heap);
       return NULL;
     }
@@ -417,6 +721,14 @@ struct caml_actor_heap *caml_actor_heap_create(uintnat owner,
   actor_heaps = heap;
   caml_plat_unlock(&actor_heaps_lock);
   return heap;
+
+metadata_failed:
+  free(worklist);
+  free(forwarding);
+  free(shadow_headers[1]);
+  free(shadow_headers[0]);
+  free(heap);
+  return NULL;
 }
 
 void caml_actor_heap_destroy(struct caml_actor_heap *heap)
@@ -449,7 +761,10 @@ void caml_actor_heap_destroy(struct caml_actor_heap *heap)
   if (!found) caml_fatal_error("attempt to destroy an unknown actor heap");
 
   caml_mem_unmap(heap->mapping, heap->mapping_bytes);
-  free(heap->shadow_headers);
+  free(heap->worklist);
+  free(heap->forwarding);
+  free(heap->shadow_headers[1]);
+  free(heap->shadow_headers[0]);
   free(heap);
 }
 
@@ -508,18 +823,19 @@ value caml_actor_heap_try_alloc(struct caml_actor_heap *heap,
       || !actor_tag_supported(wosize, tag, reserved)) return 0;
   if (wosize > CAML_UINTNAT_MAX - 1) return 0;
   whsize = Whsize_wosize(wosize);
-  if (whsize > heap->quota_words - heap->used_words) {
+  if (!caml_actor_heap_reserve(heap, whsize)) {
     if (error != NULL) *error = CAML_ACTOR_HEAP_ALLOC_QUOTA;
     return 0;
   }
 
   header = heap->cursor - whsize;
-  header_offset = header - heap->data_start;
+  header_offset = header - heap->data_start[heap->active_space];
   actor_header = Make_header_with_reserved(
     wosize, tag, NOT_MARKABLE, reserved);
-  CAMLassert(heap->shadow_headers[header_offset] == 0);
+  CAMLassert(
+    heap->shadow_headers[heap->active_space][header_offset] == 0);
   Hd_hp(header) = actor_header;
-  heap->shadow_headers[header_offset] = actor_header;
+  heap->shadow_headers[heap->active_space][header_offset] = actor_header;
 #ifdef DEBUG
   for (mlsize_t field = 0; field < wosize; field++) {
     Op_hp(header)[field] = Debug_uninit_major;
@@ -587,6 +903,11 @@ uintnat caml_actor_heap_blocks(const struct caml_actor_heap *heap)
 uintnat caml_actor_heap_shared_bypasses(const struct caml_actor_heap *heap)
 {
   return heap->shared_bypasses;
+}
+
+uintnat caml_actor_heap_collections(const struct caml_actor_heap *heap)
+{
+  return heap->collections;
 }
 
 void caml_actor_heap_note_shared_bypass(struct caml_actor_heap *heap)
@@ -724,7 +1045,8 @@ enum caml_actor_heap_store_status caml_actor_heap_check_store(
     return CAML_ACTOR_HEAP_STORE_INVALID;
   }
 
-  for (value *cursor = heap->cursor; cursor < heap->data_end; ) {
+  for (value *cursor = heap->cursor;
+       cursor < heap->data_end[heap->active_space]; ) {
     mlsize_t wosize = Wosize_hp(cursor);
     const volatile value *first = Op_hp(cursor);
     const volatile value *end = first + wosize;
@@ -764,7 +1086,8 @@ struct caml_actor_heap_verify_result caml_actor_heap_verify(
     return result;
   }
 
-  for (value *cursor = heap->cursor; cursor < heap->data_end; ) {
+  for (value *cursor = heap->cursor;
+       cursor < heap->data_end[heap->active_space]; ) {
     mlsize_t wosize = Wosize_hp(cursor);
     tag_t tag = Tag_hp(cursor);
     value block = Val_hp(cursor);

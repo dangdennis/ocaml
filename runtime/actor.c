@@ -60,10 +60,13 @@ static value actor_try_alloc(mlsize_t wosize, tag_t tag)
 
 static value actor_alloc_one(tag_t tag, value field)
 {
-  value block = actor_try_alloc(1, tag);
+  CAMLparam1(field);
+  CAMLlocal1(block);
+
+  block = actor_try_alloc(1, tag);
 
   if (block != 0) Field(block, 0) = field;
-  return block;
+  CAMLreturn(block);
 }
 
 static value actor_copy_string(const char *text)
@@ -83,8 +86,8 @@ static value actor_copy_string(const char *text)
 
 static value actor_spawn_error(enum caml_actor_spawn_status status)
 {
-  value detail;
-  value error;
+  CAMLparam0();
+  CAMLlocal2(detail, error);
 
   switch (status) {
   case CAML_ACTOR_SPAWN_LIMIT:
@@ -96,19 +99,20 @@ static value actor_spawn_error(enum caml_actor_spawn_status status)
   default: {
     value message = actor_copy_string("unsupported closure capture");
 
-    if (message == 0) return 0;
+    if (message == 0) CAMLreturn(0);
     detail = actor_alloc_one(0, message); /* Unsupported_capture */
-    if (detail == 0) return 0;
+    if (detail == 0) CAMLreturn(0);
     break;
   }
   }
   error = actor_alloc_one(1, detail); /* Error */
-  return error;
+  CAMLreturn(error);
 }
 
 static value actor_send_error(int kind, const char *text)
 {
-  value detail;
+  CAMLparam0();
+  CAMLlocal1(detail);
 
   if (kind == 0) {
     detail = Val_int(0); /* No_such_actor */
@@ -117,11 +121,11 @@ static value actor_send_error(int kind, const char *text)
   } else {
     value message = actor_copy_string(text);
 
-    if (message == 0) return 0;
+    if (message == 0) CAMLreturn(0);
     detail = actor_alloc_one(0, message); /* Unsupported_message */
-    if (detail == 0) return 0;
+    if (detail == 0) CAMLreturn(0);
   }
-  return actor_alloc_one(1, detail); /* Error */
+  CAMLreturn(actor_alloc_one(1, detail)); /* Error */
 }
 
 static enum actor_run_outcome root_failure_outcome(
