@@ -2,8 +2,10 @@
 
 All 18 open actor PRs were rebased as a dependency stack onto OCaml upstream
 `trunk` at `f0c10233335c90a21fd705e916900141f043258b`. The fork's default branch
-is named `trunk`. PR #1 now targets it; subsequent PRs retain their predecessor
-as base so that their diffs remain incremental.
+is named `trunk`. GitHub rejects direct base changes for its registered stack,
+so its existing `actor-mvp/base-5.5.0` base branch is synchronized to exactly
+the same upstream commit. Subsequent PRs retain their predecessor as base so
+that their diffs remain incremental.
 
 The 75 original commits were preserved. Compatibility resolutions retain
 upstream continuation handling, bounds checking and locale handling; use the
