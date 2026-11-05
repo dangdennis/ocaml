@@ -8135,6 +8135,11 @@ lex/table.cmo : \
 lex/table.cmx : \
     lex/table.cmi
 lex/table.cmi :
+tools/actor_primitive_policy.cmo : \
+    tools/actor_primitive_policy.cmi
+tools/actor_primitive_policy.cmx : \
+    tools/actor_primitive_policy.cmi
+tools/actor_primitive_policy.cmi :
 tools/bytecode_shape.cmo : \
     bytecomp/opcodes.cmi \
     tools/bytecode_shape.cmi
@@ -8270,6 +8275,7 @@ tools/ocamlactorcheck.cmo : \
     utils/misc.cmi \
     bytecomp/bytesections.cmi \
     tools/bytecode_shape.cmi \
+    tools/actor_primitive_policy.cmi \
     tools/ocamlactorcheck.cmi
 tools/ocamlactorcheck.cmx : \
     bytecomp/symtable.cmx \
@@ -8278,6 +8284,7 @@ tools/ocamlactorcheck.cmx : \
     utils/misc.cmx \
     bytecomp/bytesections.cmx \
     tools/bytecode_shape.cmx \
+    tools/actor_primitive_policy.cmx \
     tools/ocamlactorcheck.cmi
 tools/ocamlactorcheck.cmi :
 tools/ocamlcmt.cmo : \

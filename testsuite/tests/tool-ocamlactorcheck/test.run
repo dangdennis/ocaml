@@ -13,11 +13,49 @@ cp "${test_source_directory}/fixture_helper.ml" "${work_dir}/"
 cp "${test_source_directory}/fixture.ml" "${work_dir}/"
 cd "${work_dir}"
 
+policy="${ocamlsrcdir}/runtime/actor_primitive_policy.def"
+generator="${ocamlsrcdir}/tools/gen_actor_primitive_policy.sh"
+generated_policy=actor_primitive_policy.ml
+sh "${generator}" "${policy}" > "${generated_policy}"
+cmp "${generated_policy}" "${ocamlsrcdir}/tools/actor_primitive_policy.ml"
+
+bad_policy=actor_primitive_policy_bad.def
+printf '%s\n%s\n' \
+  'ACTOR_PRIMITIVE("duplicate", duplicate, 1, PURE, test, "audit")' \
+  'ACTOR_PRIMITIVE("duplicate", duplicate, 1, PURE, test, "audit")' \
+  > "${bad_policy}"
+if sh "${generator}" "${bad_policy}" >/dev/null 2>&1; then
+  echo "duplicate primitive policy unexpectedly accepted" >> "${output}"
+  exit 1
+fi
+printf '%s\n' \
+  'ACTOR_PRIMITIVE("missing_audit", missing_audit, 1, PURE, test, "")' \
+  > "${bad_policy}"
+if sh "${generator}" "${bad_policy}" >/dev/null 2>&1; then
+  echo "missing primitive audit unexpectedly accepted" >> "${output}"
+  exit 1
+fi
+printf '%s\n' \
+  'ACTOR_PRIMITIVE("mismatch", other, 1, PURE, test, "audit")' \
+  > "${bad_policy}"
+if sh "${generator}" "${bad_policy}" >/dev/null 2>&1; then
+  echo "primitive function mismatch unexpectedly accepted" >> "${output}"
+  exit 1
+fi
+printf '%s\n' \
+  'ACTOR_PRIMITIVE("forbidden", forbidden, 1, FORBIDDEN, test, "audit")' \
+  > "${bad_policy}"
+if sh "${generator}" "${bad_policy}" >/dev/null 2>&1; then
+  echo "forbidden primitive function unexpectedly accepted" >> "${output}"
+  exit 1
+fi
+
 fixture=actorcheck-fixture.byte
 malformed_code=actorcheck-malformed-code.byte
 malformed_data=actorcheck-malformed-data.byte
 malformed_symb=actorcheck-malformed-symb.byte
 "${ocamlrun}" "${ocamlsrcdir}/ocamlc" -nopervasives \
+  -no-check-prims \
   -use-runtime "${ocamlrun}" \
   -nostdlib -I "${ocamlsrcdir}/stdlib" \
   -o "${fixture}" \
