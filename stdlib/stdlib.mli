@@ -1365,6 +1365,7 @@ val do_domain_local_at_exit : (unit -> unit) ref
 (** {1:modules Standard library modules } *)
 
 (*MODULE_ALIASES*)
+module Actor          = Actor
 module Arg            = Arg
 module Array          = Array
 module ArrayLabels    = ArrayLabels
