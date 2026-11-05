@@ -14,9 +14,9 @@
 
 (** Experimental heap-isolated actors.
 
-    This MVP stage provides actor-world entry, spawning, actor identity, and
-    cooperative yielding on Linux x86-64 bytecode runtimes. Native code and
-    other platforms report [Unsupported_runtime] from {!run}.
+    This MVP stage provides typed actor-world entry, spawning, actor identity,
+    and reduction-based scheduling on Linux x86-64 bytecode runtimes.
+    Native code and other platforms report [Unsupported_runtime] from {!run}.
 
     An [inbox] is an actor identity capability supplied to an actor entry
     function. Messages are copied through pointer-free FIFO envelopes. *)
@@ -170,20 +170,20 @@ type stats = {
     promotion; cancelled counts include owner cleanup. Consuming or cancelling
     a timer releases its charge. Counters saturate at [max_int]. *)
 
-external run : (unit inbox -> unit) -> (unit, run_error) result
+external run : ('message inbox -> unit) -> (unit, run_error) result
   = "caml_actor_run"
 (** [run root] suspends the host computation and runs [root] as actor zero.
     The host computation resumes only after the actor world has been retired. *)
 
 val run_with_heap_limits :
   root:heap_limits -> child:heap_limits ->
-  (unit inbox -> unit) -> (unit, run_error) result
+  ('message inbox -> unit) -> (unit, run_error) result
 (** [run_with_heap_limits ~root ~child entry] uses elastic heaps for the root
     and for children created by {!spawn}. It raises [Invalid_argument] before
     entering the actor world when either limit pair is invalid. *)
 
 val run_with_config : world_config ->
-  (unit inbox -> unit) -> (unit, run_error) result
+  ('message inbox -> unit) -> (unit, run_error) result
 (** [run_with_config config entry] validates every limit before freezing the
     host world. It raises [Invalid_argument] for an invalid configuration. *)
 
@@ -244,6 +244,15 @@ val await_any_exit : monitor list -> int * exit_reason
     index of the first ready monitor in list order is returned and that
     monitor is consumed; all others remain live.
     Empty, duplicate, forged, foreign, or consumed monitor sets fail closed. *)
+
+type 'message event = Message of 'message | Exit of int * exit_reason
+
+val receive_or_exit : 'message inbox -> monitor list -> 'message event
+(** Wait for a FIFO mailbox message or one owned monitor exit. Validate the
+    complete monitor set before consuming either source. Ready exits take
+    priority over messages; simultaneous exits follow list order. Only the
+    selected event is consumed. Empty sets provide ordinary mailbox waiting.
+    Invalid, duplicate, foreign or consumed monitors fail closed. *)
 
 external yield : unit -> unit
   = "caml_actor_yield"
@@ -314,6 +323,13 @@ module Net : sig
       handle in that actor's inbox. Failure preserves ownership and the inbox.
       Success invalidates every alias of the old handle, including after a
       transfer back. Self-transfer is rejected. *)
+
+  val transfer_with : socket -> (socket * 'message) pid -> 'message ->
+    (unit, error) result
+  (** Transfer authority and enqueue [(fresh_socket, message)] atomically.
+      Metadata follows ordinary copied-message rules. Unsupported metadata
+      returns [Invalid_argument]; message/mailbox quotas return [Mailbox_limit].
+      Failure preserves ownership and the destination mailbox. *)
 
   val close : socket -> (unit, error) result
   val close_listener : listener -> (unit, error) result

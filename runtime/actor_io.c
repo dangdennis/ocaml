@@ -71,7 +71,7 @@ static int real_listen(void *context, const char *address, int port, int *bound)
 {
   struct sockaddr_in addr;
   socklen_t length = sizeof(addr);
-  int fd, error;
+  int fd, error, reuse = 1;
   (void)context;
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
@@ -79,7 +79,10 @@ static int real_listen(void *context, const char *address, int port, int *bound)
   if (inet_pton(AF_INET, address, &addr.sin_addr) != 1) return -EINVAL;
   fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   if (fd < 0) return -errno;
-  if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0
+  /* A restarted listener must reclaim its endpoint while old connections
+     finish TCP teardown. This does not enable simultaneous port sharing. */
+  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0
+      || bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0
       || listen(fd, 128) != 0
       || getsockname(fd, (struct sockaddr *)&addr, &length) != 0) {
     error = errno;

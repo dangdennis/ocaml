@@ -147,13 +147,13 @@ type stats = {
   net_byte_limit : int;
 }
 
-type run_request =
-  int * int * int * int * (unit inbox -> unit)
+type 'message run_request =
+  int * int * int * int * ('message inbox -> unit)
 
-external run_request : run_request -> (unit, run_error) result
+external run_request : 'message run_request -> (unit, run_error) result
   = "caml_actor_run"
 
-external run : (unit inbox -> unit) -> (unit, run_error) result
+external run : ('message inbox -> unit) -> (unit, run_error) result
   = "caml_actor_run"
 
 let run_with_heap_limits ~root ~child entry =
@@ -161,12 +161,12 @@ let run_with_heap_limits ~root ~child entry =
     (root.initial_words, root.maximum_words,
      child.initial_words, child.maximum_words, entry)
 
-type configured_run_request =
+type 'message configured_run_request =
   int * int * int * int * int * int * int * int * int * int * int *
   int * int * int *
-  (unit inbox -> unit)
+  ('message inbox -> unit)
 
-external configured_run_request : configured_run_request ->
+external configured_run_request : 'message configured_run_request ->
   (unit, run_error) result
   = "caml_actor_run"
 
@@ -240,6 +240,12 @@ external await_any_exit_request : await_any_exit_request ->
 
 let await_any_exit monitors = await_any_exit_request (1, monitors)
 
+type 'message event = Message of 'message | Exit of int * exit_reason
+external receive_or_exit_request : int * ('message inbox * monitor list) ->
+  'message event = "caml_actor_receive"
+let receive_or_exit inbox monitors = receive_or_exit_request (4, (inbox,
+  monitors))
+
 external yield : unit -> unit
   = "caml_actor_yield"
 
@@ -290,6 +296,8 @@ module Net = struct
   let close_listener listener = request (3, (6, listener, "", 0, 0, 0))
   let transfer socket destination =
     request (3, (7, socket, "", 0, 0, destination))
+  let transfer_with socket destination message =
+    request (3, (8, socket, message, 0, 0, destination))
 end
 
 module Supervisor = struct

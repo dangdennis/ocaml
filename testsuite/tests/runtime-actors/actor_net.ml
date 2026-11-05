@@ -25,7 +25,11 @@ let () =
             = Error Actor.Net.Invalid_argument)));
   world (Actor.run (fun _ ->
     let listener = ok (Actor.Net.listen ~address:"127.0.0.1" ~port:0) in
-    assert (ok (Actor.Net.local_port listener) > 0);
+    let port = ok (Actor.Net.local_port listener) in
+    assert (port > 0);
+    (match Actor.Net.listen ~address:"127.0.0.1" ~port with
+     | Error (Actor.Net.Io_error _) -> ()
+     | _ -> failwith "two live listeners shared one endpoint");
     ok (Actor.Net.close_listener listener);
     assert (Actor.Net.close_listener listener = Error Actor.Net.Invalid_handle)));
   world (Actor.run (fun inbox ->

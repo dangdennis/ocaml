@@ -227,6 +227,7 @@ CAMLextern void caml_actor_scheduler_cleanup_timers(
   struct caml_actor_scheduler *);
 CAMLextern int caml_actor_scheduler_wait(struct caml_actor_scheduler *);
 CAMLextern int caml_actor_scheduler_request_monitor_blocked(void);
+CAMLextern int caml_actor_scheduler_request_event_blocked(void);
 CAMLextern void caml_actor_scheduler_test_timer_backend(
   const struct caml_actor_timer_backend *);
 CAMLextern void caml_actor_scheduler_destroy(
