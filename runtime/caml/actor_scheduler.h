@@ -243,6 +243,9 @@ caml_actor_scheduler_prepare_closure_default(
   struct caml_actor_prepared_spawn **prepared);
 CAMLextern uintnat caml_actor_scheduler_prepared_pid(
   const struct caml_actor_prepared_spawn *prepared);
+CAMLextern enum caml_actor_monitor_status
+caml_actor_scheduler_prepare_spawn_monitor(
+  struct caml_actor_prepared_spawn *prepared, uintnat *monitor_id);
 CAMLextern int caml_actor_scheduler_commit_prepared(
   struct caml_actor_prepared_spawn *prepared);
 CAMLextern void caml_actor_scheduler_abort_prepared(
@@ -281,6 +284,8 @@ CAMLextern enum caml_actor_monitor_status caml_actor_scheduler_monitor(
 CAMLextern enum caml_actor_monitor_status caml_actor_scheduler_peek_exit(
   struct caml_actor_scheduler *scheduler, uintnat monitor_id,
   struct caml_actor_exit_reason *reason);
+CAMLextern enum caml_actor_monitor_status caml_actor_scheduler_validate_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id);
 CAMLextern int caml_actor_scheduler_consume_exit(
   struct caml_actor_scheduler *scheduler, uintnat monitor_id);
 CAMLextern int caml_actor_scheduler_discard_monitor(

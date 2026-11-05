@@ -1,0 +1,8 @@
+transient restart uses a fresh generation: ok
+temporary and transient policies terminate: ok
+one-for-one restart preserves healthy siblings: ok
+restart intensity and monotonic window: ok
+start failure shuts down in reverse order: ok
+restart failure is transactional: ok
+supervisor configuration validation: ok
+supervisor failure cleans the actor world: ok
