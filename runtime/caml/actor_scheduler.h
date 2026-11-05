@@ -55,6 +55,7 @@ enum caml_actor_failure {
   CAML_ACTOR_FAILURE_EXCEPTION,
   CAML_ACTOR_FAILURE_UNSUPPORTED,
   CAML_ACTOR_FAILURE_HEAP_EXHAUSTED,
+  CAML_ACTOR_FAILURE_CANCELLED,
   CAML_ACTOR_FAILURE_INVALID_HEAP,
   CAML_ACTOR_FAILURE_INVALID_RESULT,
   CAML_ACTOR_FAILURE_INTERNAL
@@ -104,6 +105,40 @@ enum caml_actor_send_status {
   CAML_ACTOR_SEND_INVALID_CONTEXT
 };
 
+enum caml_actor_monitor_status {
+  CAML_ACTOR_MONITOR_OK = 0,
+  CAML_ACTOR_MONITOR_MISSING,
+  CAML_ACTOR_MONITOR_STALE,
+  CAML_ACTOR_MONITOR_PENDING,
+  CAML_ACTOR_MONITOR_READY,
+  CAML_ACTOR_MONITOR_SELF,
+  CAML_ACTOR_MONITOR_LIMIT,
+  CAML_ACTOR_MONITOR_RESOURCE_UNAVAILABLE,
+  CAML_ACTOR_MONITOR_INVALID_CONTEXT
+};
+
+enum caml_actor_exit_kind {
+  CAML_ACTOR_EXIT_NORMAL = 0,
+  CAML_ACTOR_EXIT_EXCEPTION,
+  CAML_ACTOR_EXIT_HEAP_LIMIT,
+  CAML_ACTOR_EXIT_MAILBOX_LIMIT,
+  CAML_ACTOR_EXIT_CANCELLED,
+  CAML_ACTOR_EXIT_UNSUPPORTED,
+  CAML_ACTOR_EXIT_RUNTIME_FAILURE
+};
+
+#define CAML_ACTOR_EXIT_SUMMARY_BYTES 256
+#define CAML_ACTOR_EXIT_BACKTRACE_BYTES 2048
+#define CAML_ACTOR_BACKTRACE_SLOTS 32
+
+struct caml_actor_exit_reason {
+  enum caml_actor_exit_kind kind;
+  struct caml_actor_unsupported unsupported;
+  char summary[CAML_ACTOR_EXIT_SUMMARY_BYTES];
+  char backtrace[CAML_ACTOR_EXIT_BACKTRACE_BYTES];
+  int backtrace_truncated;
+};
+
 struct caml_actor_step {
   enum caml_actor_step_reason reason;
   uintnat pid;
@@ -141,6 +176,10 @@ struct caml_actor_scheduler_stats {
   uintnat message_word_limit;
   uintnat mailbox_message_limit;
   uintnat mailbox_byte_limit;
+  uintnat monitors;
+  uintnat peak_monitors;
+  uintnat monitor_quota_failures;
+  uintnat monitor_limit;
 };
 
 CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create(
@@ -149,7 +188,7 @@ CAMLextern struct caml_actor_scheduler *caml_actor_scheduler_create_configured(
   uintnat capacity, uintnat reduction_budget,
   mlsize_t child_initial_heap_words, mlsize_t child_maximum_heap_words,
   mlsize_t message_quota_words, uintnat mailbox_message_limit,
-  uintnat mailbox_byte_limit);
+  uintnat mailbox_byte_limit, uintnat monitor_limit);
 CAMLextern void caml_actor_scheduler_destroy(
   struct caml_actor_scheduler *scheduler);
 
@@ -218,6 +257,21 @@ caml_actor_scheduler_peek_current_message(
 CAMLextern int caml_actor_scheduler_consume_current_message(
   struct caml_actor_scheduler *scheduler);
 
+/* Monitor records and exit reasons are scheduler-owned and pointer-free.
+   Public values are constructed only by the observing actor. */
+CAMLextern enum caml_actor_monitor_status caml_actor_scheduler_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat target_pid,
+  uintnat *monitor_id);
+CAMLextern enum caml_actor_monitor_status caml_actor_scheduler_peek_exit(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id,
+  struct caml_actor_exit_reason *reason);
+CAMLextern int caml_actor_scheduler_consume_exit(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id);
+CAMLextern int caml_actor_scheduler_discard_monitor(
+  struct caml_actor_scheduler *scheduler, uintnat monitor_id);
+CAMLextern enum caml_actor_monitor_status caml_actor_scheduler_cancel(
+  struct caml_actor_scheduler *scheduler, uintnat target_pid);
+
 CAMLextern struct caml_actor_step caml_actor_scheduler_step(
   struct caml_actor_scheduler *scheduler);
 CAMLextern enum caml_actor_pid_lookup caml_actor_scheduler_snapshot(
@@ -240,6 +294,9 @@ CAMLextern int caml_actor_scheduler_request_yield(void);
 CAMLextern int caml_actor_scheduler_request_blocked(void);
 CAMLextern int caml_actor_scheduler_request_unsupported(void);
 CAMLextern int caml_actor_scheduler_request_heap_exhausted(void);
+CAMLextern void caml_actor_scheduler_reset_backtrace(void);
+CAMLextern void caml_actor_scheduler_record_backtrace_slot(
+  backtrace_slot slot);
 CAMLextern void caml_actor_scheduler_record_unsupported_opcode(
   uintnat opcode);
 CAMLextern void caml_actor_scheduler_record_unsupported_primitive(

@@ -1,0 +1,5 @@
+normal monitor and mailbox isolation: ok
+structured monitored failures: ok
+monitor identity and fanout: ok
+foreign and consumed monitors fail closed: ok
+generation-checked cancellation: ok

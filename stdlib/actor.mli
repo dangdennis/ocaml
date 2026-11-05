@@ -27,6 +27,33 @@ type 'message pid
 type 'message inbox
 (** The identity capability supplied to an actor entry function. *)
 
+type monitor
+(** A generation-safe scheduler capability for observing one actor exit. *)
+
+type backtrace = {
+  text : string;
+  truncated : bool;
+}
+(** Bounded bytecode backtrace text. [truncated] records an explicit size
+    limit rather than silently presenting incomplete data as complete. *)
+
+type exit_reason =
+  | Normal
+  | Uncaught_exception of { summary : string; backtrace : backtrace option }
+  | Heap_limit
+  | Mailbox_limit
+  | Cancelled
+  | Unsupported_operation of string
+  | Runtime_failure of string
+(** Pointer-free reason copied from scheduler-owned exit data into the
+    waiting actor's heap. [Mailbox_limit] is reserved for an actor-fatal
+    mailbox condition; a recoverable {!send} rejection does not terminate
+    its caller. *)
+
+type monitor_error = Monitor_missing | Monitor_stale | Monitor_limit
+
+type cancel_error = Cancel_missing | Cancel_stale | Cancel_self
+
 type heap_limits = {
   initial_words : int;
   maximum_words : int;
@@ -45,13 +72,14 @@ type world_config = {
   max_message_words : int;
   max_mailbox_messages : int;
   max_mailbox_bytes : int;
+  max_monitors : int;
 }
 (** Immutable actor-world limits. [max_actors] includes the root actor and must
     be between 2 and 65,536. Reduction and message limits must be positive.
     [max_message_words] bounds graph discovery and pointer-free serialization
     work for each send. [max_mailbox_messages] and [max_mailbox_bytes] bound
     the aggregate queued envelopes in the actor world. All limits must be
-    positive. *)
+    positive. [max_monitors] bounds scheduler-owned monitor records. *)
 
 val default_world_config : world_config
 
@@ -94,6 +122,10 @@ type stats = {
   message_word_limit : int;
   mailbox_message_limit : int;
   mailbox_byte_limit : int;
+  monitors : int;
+  peak_monitors : int;
+  monitor_quota_failures : int;
+  monitor_limit : int;
 }
 (** A deterministic snapshot of the current actor world's scheduler counts.
     [runnable_actors] includes the actor taking the snapshot.
@@ -101,8 +133,10 @@ type stats = {
     [mailbox_bytes] is the current aggregate encoded-byte charge and
     [mailbox_quota_failures] counts rejected graph, message-count, and byte
     quota attempts. Heap fields describe only the actor taking the snapshot;
-    the remaining limit fields describe its immutable actor world. Counters
-    saturate at [max_int]. *)
+    [monitors] includes pending and ready unconsumed monitor records.
+    [peak_monitors], [monitor_quota_failures], and [monitor_limit] describe
+    deterministic monitor-resource use. The remaining limit fields describe
+    the immutable actor world. Counters saturate at [max_int]. *)
 
 external run : (unit inbox -> unit) -> (unit, run_error) result
   = "caml_actor_run"
@@ -132,6 +166,21 @@ val spawn_with_heap_limits : heap_limits -> ('message inbox -> unit) ->
 (** [spawn_with_heap_limits limits entry] overrides the configured child heap
     limits for one spawn. Invalid limits return [Error Initial_heap_limit]. *)
 
+val monitor : _ pid -> (monitor, monitor_error) result
+(** [monitor pid] registers the calling actor to receive exactly one exit
+    reason for the current generation of [pid]. Dead empty slots report
+    [Monitor_missing]; mismatched or retired generations report
+    [Monitor_stale], and a full world-owned monitor table reports
+    [Monitor_limit] without registering a partial monitor. *)
+
+val cancel : _ pid -> (unit, cancel_error) result
+(** [cancel pid] requests deterministic termination of the current generation
+    of [pid]. The target cannot run again after a successful request and its
+    monitors receive [Cancelled] through the ordinary exit boundary. Dead
+    empty slots report [Cancel_missing] and mismatched or retired generations
+    report [Cancel_stale]. Cancelling the calling actor reports [Cancel_self]
+    rather than destroying its active heap. *)
+
 external self : 'message inbox -> 'message pid
   = "caml_actor_self"
 (** [self inbox] returns the identity associated with [inbox]. *)
@@ -147,6 +196,11 @@ external receive : 'message inbox -> 'message
   = "caml_actor_receive"
 (** [receive inbox] returns the oldest message, blocking only the current
     actor while its mailbox is empty. *)
+
+val await_exit : monitor -> exit_reason
+(** [await_exit monitor] blocks only the calling actor until the monitored
+    actor exits. Exit events do not enter or reorder the typed user mailbox.
+    A forged, foreign, or already-consumed monitor fails closed. *)
 
 external yield : unit -> unit
   = "caml_actor_yield"
