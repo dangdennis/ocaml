@@ -21,9 +21,9 @@ state.
 
 ## API
 
-The planned complete public surface has this shape. PR 6 introduces `run`,
-`spawn`, `self`, and `yield`; PR 7 adds `send` and `receive` without changing
-the types or constructors below:
+This excerpt shows the core message and supervision surface. The complete
+interface, including timer/network limits and statistics, is in
+`stdlib/actor.mli`. Earlier PR stages introduce these operations incrementally:
 
 ```ocaml
 module Actor : sig
@@ -116,12 +116,12 @@ module Actor : sig
     monitor_limit : int;
   }
 
-  val run : (unit inbox -> unit) -> (unit, run_error) result
+  val run : ('message inbox -> unit) -> (unit, run_error) result
   val run_with_heap_limits :
     root:heap_limits -> child:heap_limits ->
-    (unit inbox -> unit) -> (unit, run_error) result
+    ('message inbox -> unit) -> (unit, run_error) result
   val run_with_config : world_config ->
-    (unit inbox -> unit) -> (unit, run_error) result
+    ('message inbox -> unit) -> (unit, run_error) result
   val spawn : ('message inbox -> unit) ->
     ('message pid, spawn_error) result
   val spawn_with_heap_limits : heap_limits ->
@@ -135,6 +135,8 @@ module Actor : sig
   val self : 'message inbox -> 'message pid
   val send : 'message pid -> 'message -> (unit, send_error) result
   val receive : 'message inbox -> 'message
+  type 'message event = Message of 'message | Exit of int * exit_reason
+  val receive_or_exit : 'message inbox -> monitor list -> 'message event
   val yield : unit -> unit
   val stats : unit -> stats
 
@@ -964,3 +966,39 @@ DNS, outbound connect, TLS, UDP, files, listener transfer, half-close APIs,
 per-operation timeouts, general wait sets and native/parallel actors remain
 outside this layer. The supervised application and sustained service-level
 hardening remain Layer 17 work.
+
+
+## Layer 17 application boundary
+
+The supervised reference service in `examples/actor-kv` is built as ordinary
+OCaml modules against the public interface. Its root owns every state,
+listener, connection and deadline monitor. Listener restart drains connection
+workers before rebinding the same TCP port; state failure ends the service.
+This is explicit application supervision, not a new implicit cascade rule for
+`Actor.Supervisor`.
+
+Root entry accepts a typed inbox. `receive_or_exit inbox monitors` validates
+ownership and uniqueness of the complete monitor list before consuming an
+event. Ready exits have priority and follow list order; otherwise the oldest
+mailbox message is decoded and wrapped. Empty monitor sets are allowed. The
+actor blocks on both sources when neither is ready, with no OCaml pointer
+retained by C. Decode and result allocation precede message consumption;
+exit-reason allocation precedes monitor consumption. Cancellation and teardown
+use the existing actor lifecycle boundary.
+
+`Net.transfer_with socket destination metadata` atomically enqueues
+`(fresh_socket, copied_metadata)` and transfers ownership. It uses the ordinary
+pointer-free encoder, mailbox quotas and fresh authority identity. Unsupported
+metadata returns `Invalid_argument`; graph/mailbox quotas return `Mailbox_limit`.
+Rejected transfers preserve source authority and the destination mailbox.
+Recipient death closes the socket even before the handoff message is read.
+Both transfer forms record mailbox quota failures and use trace action
+`transfer`; metadata is excluded from public tracing.
+
+Linux listeners set `SO_REUSEADDR` before bind so a supervised replacement can
+reuse an endpoint during TCP teardown. `SO_REUSEPORT` is not enabled: a second
+live listener on the same address and port still fails.
+
+`LAYER_17_VALIDATION.md` records executable evidence. Passing the bounded
+application is not a general package-compatibility, native, parallel, security
+sandbox or production latency guarantee.
