@@ -205,6 +205,7 @@ DOMAIN_STATE(struct caml_exception_context*, external_raise)
 DOMAIN_STATE(struct memprof_domain_s *, memprof)
 DOMAIN_STATE(value *, memprof_young_trigger)
 
+DOMAIN_STATE(struct caml_actor_scheduler *, actor_scheduler)
 DOMAIN_STATE(struct caml_actor_heap *, actor_heap)
 
 DOMAIN_STATE(extra_params_area, extra_params)

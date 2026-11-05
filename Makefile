@@ -1205,6 +1205,7 @@ runtime_COMMON_C_SOURCES = \
   afl \
   alloc \
   actor_heap \
+  actor_scheduler \
   array \
   backtrace \
   bigarray \
