@@ -36,7 +36,8 @@ let run ~state ~test_control ~shutdown inbox =
         false
     | Ok Crash -> failwith "injected connection failure"
     | Ok command ->
-        match Actor.send state (Kv_state.Execute (command, socket, self)) with
+        match Actor.Gen_server.cast (Actor.Gen_server.of_pid state)
+          (Kv_state.Execute (command, socket, self)) with
         | Error _ -> false
         | Ok () ->
             let returned, reply = Actor.receive inbox in
