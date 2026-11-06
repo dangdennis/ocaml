@@ -260,3 +260,4 @@ testsuite/tests/parsetree/locations_test.ml text eol=lf
 
 # Raw local reference-service validation report.
 /testsuite/benchmarks/runtime-actors/layer17-soak.json typo.missing-header
+/testsuite/benchmarks/runtime-actors/layer18-soak.json typo.missing-header

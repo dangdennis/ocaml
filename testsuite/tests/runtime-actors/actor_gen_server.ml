@@ -1,3 +1,7 @@
+(* TEST
+ { linux; arch_amd64; bytecode; }
+*)
+
 (**************************************************************************)
 (*                                                                        *)
 (*                                 OCaml                                  *)
@@ -12,9 +16,7 @@
 (*                                                                        *)
 (**************************************************************************)
 
-(* TEST
- { linux; arch_amd64; bytecode; }
-*)
+
 
 module G = Actor.Gen_server
 let ok = function Ok x -> x | Error _ -> failwith "Gen_server failed"

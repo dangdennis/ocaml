@@ -1,0 +1,89 @@
+{
+  "recorded_on": "2026-11-06",
+  "base_commit": "70aeb12473f222999e4dc7f90ffee356a3c438ff",
+  "environment": "Linux amd64 Docker emulated on macOS arm64",
+  "runtime": "normal",
+  "workload": {
+    "clients": 2,
+    "connection_limit": 4,
+    "map_entry_limit": 8,
+    "commands_per_connection": [
+      "PING",
+      "SET",
+      "GET",
+      "QUIT"
+    ],
+    "latency": "whole connection and four-command round trip",
+    "memory": "peak whole-process RSS, including emulation",
+    "note": "Other validation activity ran on the host; not a comparison"
+  },
+  "implementation": {
+    "input": "sorted path + NUL + SHA256(file) + LF",
+    "sha256":
+      "795d0e6915a482aef14920a7a22c0e21e7c65a2fa33657321d02d5da6da9f962",
+    "files": [
+      {
+        "path": "examples/actor-kv/kv_connection.ml",
+        "sha256":
+          "7b48f4c84926e1ccc0873daf6f700ab09d59680cf8cbda627d7575832e3f992c"
+      },
+      {
+        "path": "examples/actor-kv/kv_listener.ml",
+        "sha256":
+          "c4643208e85d6fb6529328f674db3dbf1b2ea98bbfcfc22bbc37faf54d201528"
+      },
+      {
+        "path": "examples/actor-kv/kv_protocol.ml",
+        "sha256":
+          "6a97869112f9b547d9e841766661b2f12baeda3c004b439afd76dea16bbad689"
+      },
+      {
+        "path": "examples/actor-kv/kv_service.ml",
+        "sha256":
+          "9b29f67fe0541c066925015ad362c1e0d5e8b27db3ea6bf70a04b6148b3cf278"
+      },
+      {
+        "path": "examples/actor-kv/kv_state.ml",
+        "sha256":
+          "c984065f47efbb2f78c9455c88acfb8e431c97d8e411533ed3fa7c50f30bfb7e"
+      },
+      {
+        "path": "examples/actor-kv/main.ml",
+        "sha256":
+          "7687e2b6e129cd76708f87f0a5e2c2f99460096c27b0b6b7ff81a22b39e2debe"
+      },
+      {
+        "path": "stdlib/actor.ml",
+        "sha256":
+          "adf5da3c6e914349b897cfa2f447f4147bff567a096027850b08a23ae44168c7"
+      },
+      {
+        "path": "stdlib/actor.mli",
+        "sha256":
+          "32d0977249c6af0fadd6229ef94bf6a417313317eb01929365937296ab688538"
+      }
+    ]
+  },
+  "acceptance": {
+    "normal": "passed",
+    "restart": "passed",
+    "timeout": "passed",
+    "quota": "passed",
+    "state": "passed",
+    "storm": "passed",
+    "descriptors": "passed",
+    "mailboxes": "passed",
+    "buffers": "passed",
+    "operations": "passed",
+    "soak": {
+      "seconds": 60.001,
+      "connections": 75577,
+      "commands": 302308,
+      "commands_per_second": 5038.39,
+      "connection_roundtrip_ms_p50": 1.565,
+      "connection_roundtrip_ms_p95": 2.032,
+      "connection_roundtrip_ms_p99": 2.589,
+      "peak_process_rss_kib": 14528
+    }
+  }
+}

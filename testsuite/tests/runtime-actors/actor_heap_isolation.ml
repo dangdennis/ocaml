@@ -1,3 +1,7 @@
+(* TEST
+ { linux; arch_amd64; bytecode; }
+*)
+
 (**************************************************************************)
 (*                                                                        *)
 (*                                 OCaml                                  *)
@@ -12,9 +16,7 @@
 (*                                                                        *)
 (**************************************************************************)
 
-(* TEST
- { linux; arch_amd64; bytecode; }
-*)
+
 
 type graph = { bytes : bytes; mutable cycle : graph option; alias : bytes }
 type command = Graph of graph | Churn | Inspect | Stop | Exhaust
