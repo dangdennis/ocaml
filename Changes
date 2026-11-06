@@ -7,6 +7,12 @@ Working version
 
 ### Runtime system:
 
+- Actor library: add a heap-isolation acceptance/mutation gate and a typed
+  Gen_server behavior with initialization acknowledgement, casts, bounded
+  reply waits and monitored helper cleanup. Use the behavior for the TCP
+  key/value state actor and include a counter example.
+  (Dennis Dang)
+
 - Actor runtime: add typed root inboxes, combined mailbox/monitor waiting and
   atomic socket handoff with copied metadata. Include a supervised TCP
   key/value reference service with bounded resources, restart recovery,

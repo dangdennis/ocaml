@@ -13,12 +13,12 @@
 (**************************************************************************)
 
 module Keys = Map.Make (String)
-type message = Execute of Kv_protocol.command * Actor.Net.socket *
+type command = Execute of Kv_protocol.command * Actor.Net.socket *
   (Actor.Net.socket * Kv_protocol.reply) Actor.pid
 
-let run ~max_entries inbox =
-  let rec loop entries =
-    let Execute (command, socket, destination) = Actor.receive inbox in
+type message = (unit, unit, command) Actor.Gen_server.message
+
+let execute max_entries (Execute (command, socket, destination)) entries =
     let entries, reply = match command with
       | Kv_protocol.Ping -> entries, Kv_protocol.Pong
       | Get key -> entries,
@@ -36,6 +36,12 @@ let run ~max_entries inbox =
     in
     (* A dead/disconnected recipient must not take down the shared state. *)
     ignore (Actor.send destination (socket, reply));
-    loop entries
-  in
-  loop Keys.empty
+    entries
+
+let run ~max_entries inbox =
+  Actor.Gen_server.run {
+    init = (fun () -> Keys.empty);
+    handle_call = (fun () entries -> (), entries);
+    handle_cast = execute max_entries;
+    terminate = (fun _ -> ());
+  } inbox

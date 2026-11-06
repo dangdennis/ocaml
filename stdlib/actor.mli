@@ -288,6 +288,78 @@ module Timer : sig
       Actor cancellation removes all its timers. Timers may run late. *)
 end
 
+module Gen_server : sig
+  type error =
+    | Invalid_timeout
+    | Request_id_exhausted
+    | Spawn_failed of spawn_monitored_error
+    | Monitor_failed of monitor_error
+    | Send_failed of send_error
+    | Server_down of exit_reason
+    | Deadline_failed of exit_reason
+    | Helper_failed of exit_reason
+    | Timeout
+
+  type ('request, 'reply, 'cast, 'state) callbacks = {
+    init : unit -> 'state;
+    handle_call : 'request -> 'state -> 'reply * 'state;
+    handle_cast : 'cast -> 'state -> 'state;
+    terminate : 'state -> unit;
+  }
+  (** Initialization and handlers run in the server's private heap.
+      [terminate] runs only for an explicitly processed [stop], not on
+      cancellation, quota exhaustion or an uncaught callback exception.
+      Callback captures and all messages must satisfy the actor graph rules. *)
+
+  type ('request, 'reply, 'cast) message
+  type ('request, 'reply, 'cast) t
+  type 'reply delivery
+  type 'reply client
+
+  val client : 'reply delivery inbox -> 'reply client
+  (** Bind a dedicated library inbox to the current actor. The client is
+      actor-local and supports sequential calls. Do not send user messages
+      into this inbox. Copying a client does not grant inbox authority. *)
+
+  val start : 'reply client ->
+    ('request, 'reply, 'cast, 'state) callbacks ->
+    (('request, 'reply, 'cast) t * monitor, error) result
+  (** Spawn and monitor a server, waiting for successful initialization.
+      The returned monitor belongs to the caller and must be consumed when
+      the server exits. Initialization failure is observed through its exit.
+      Startup has no deadline; initialization must finish or fail. *)
+
+  val run : ('request, 'reply, 'cast, 'state) callbacks ->
+    ('request, 'reply, 'cast) message inbox -> unit
+  (** Serve in an externally spawned actor, allowing existing supervision
+      policies to own its monitor. *)
+
+  val of_pid : ('request, 'reply, 'cast) message pid ->
+    ('request, 'reply, 'cast) t
+
+  val cast : ('request, 'reply, 'cast) t -> 'cast ->
+    (unit, send_error) result
+  (** Success acknowledges enqueueing, not execution. *)
+
+  val stop : ('request, 'reply, 'cast) t -> (unit, send_error) result
+  (** Enqueue an orderly stop after earlier messages. Await the separately
+      owned monitor to observe termination. *)
+
+  val call : 'reply client -> ('request, 'reply, 'cast) t -> 'request ->
+    timeout:float -> ('reply, error) result
+  (** A finite deadline in [0, 86400] seconds bounds the reply wait, subject
+      to scheduler delay. Zero can expire before the request is processed.
+      Timeout does not cancel a request or roll back its side effects.
+      Every call uses two temporary actors, two caller-owned monitors and
+      three helper-owned monitors, and at most one timer. These charges are
+      released before returning, including errors. A private reply helper
+      isolates late replies from later calls. Exits take priority over a
+      simultaneously ready reply. Caller death is observed by the helper,
+      which cancels its deadline sibling; this is not general nested
+      supervisor cancellation. Unexpected simultaneous caller/helper death
+      can leave the deadline actor until its finite deadline expires. *)
+end
+
 module Net : sig
   (** Numeric IPv4 TCP servers on Linux bytecode runtimes. Waiting suspends
       only the caller. Handles have exactly one actor owner; sending or

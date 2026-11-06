@@ -69,3 +69,9 @@ no socket authority; the runtime checks the current owner on every operation.
 See [Layer 17 validation](../../LAYER_17_VALIDATION.md) for evidence and remaining
 CI/review limits. DNS, TLS, outbound connections, durable storage, native actors
 and parallel schedulers remain outside this example.
+
+The state actor now runs through `Actor.Gen_server` callbacks. Connections use
+its cast path with the existing socket-tagged replies. This preserves the
+service's original actor/timer limits; synchronous `Gen_server.call` reserves
+additional helper actors. See [the counter example](../actor-gen-server/README.md)
+for typed calls and their quota/deadline contract.

@@ -63,6 +63,7 @@ part of the current roadmap.
 | Layer 15: timers and scheduler waiting | `codex/15-timers`, PR #18 | Complete and published as a stacked draft |
 | Layer 16: nonblocking TCP | `codex/16-nonblocking-tcp` | Implemented; stacked draft publication gates below |
 | Layer 17: reference service and hardening | `codex/17-reference-service` | Implemented; local acceptance and publication gates below |
+| Layer 18: isolation acceptance and Gen_server | `codex/18-isolation-gen-server` | Implemented; validation and remaining limits in LAYER_18_VALIDATION.md |
 
 Layer 10's published implementation boundary comprises the generated policy
 and array slice through `29786ee3cf`, the corpus-driven string, hashing,
@@ -681,6 +682,31 @@ CI includes the external-client suite and short soak on normal and sanitizer
 builds. GitHub Actions is still disabled; hosted platform checks and independent
 maintainer review remain publication gates. This remains an experimental
 single-Domain Linux x86-64 bytecode runtime.
+
+## Layer 18: isolation acceptance and typed Gen_server
+
+The explicit isolation gate groups distinct arena ownership, corrupt-edge
+rejection, frozen-global write fences, independent copying collection,
+pointer-free wire validation, and generated message-copy tests. Its new
+multi-actor scenario forces growth/collection under different heap limits,
+mutates both sides of copied cyclic/aliased graphs, exhausts one actor and
+checks surviving peers through repeated retirement and identity reuse.
+A disposable-build mutation runner confirms that foreign-edge, shared-heap
+allocation and foreign-store regressions are caught, then restores the
+baseline. This is executable evidence within the restricted actor runtime,
+not a formal proof or OS-process security isolation.
+
+`Actor.Gen_server` is a typed ordinary-OCaml behavior with server-owned state,
+initialization acknowledgement, casts, explicit stop and sequential client
+calls. Two bounded helpers provide server-death observation and reply
+waiting with a deadline; late replies target a retired helper. Per-call
+resource charges and simultaneous caller/helper-death limits are documented
+in `examples/actor-gen-server/README.md`. The key/value state actor uses the
+cast behavior; the counter and focused tests exercise calls. No runtime
+primitive, allocation path, write fence or capability allowlist changes.
+
+Nested supervisor cascades, general wait sets and OTP compatibility remain
+separate work. See `LAYER_18_VALIDATION.md` for commands and validation.
 
 ### Current next action
 

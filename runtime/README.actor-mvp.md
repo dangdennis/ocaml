@@ -1002,3 +1002,18 @@ live listener on the same address and port still fails.
 `LAYER_17_VALIDATION.md` records executable evidence. Passing the bounded
 application is not a general package-compatibility, native, parallel, security
 sandbox or production latency guarantee.
+
+## Typed Gen_server and explicit isolation acceptance
+
+Layer 18 adds `Actor.Gen_server`, an ordinary OCaml behavior over existing
+actor primitives. A dedicated client inbox and temporary reply helper keep
+unrelated/late replies out of later calls. Callbacks own their state inside
+the server heap. Startup acknowledgement, call deadlines, resource charges,
+error handling and cancellation limits are documented in
+`examples/actor-gen-server/README.md`; this is not full OTP supervision.
+
+Run `sh tools/ci/actions/actor-isolation.sh` for the ownership, collection,
+frozen-global, wire and generated-copy acceptance gate. The optional
+`actor-isolation-mutations.py` runner uses a disposable built checkout to
+weaken three guards and requires runtime assertions to catch each mutation.
+It never installs a runtime option that disables isolation in the checkout.

@@ -270,6 +270,173 @@ module Timer = struct
     else match after seconds with Error e -> Error e | Ok t -> await t
 end
 
+module Gen_server = struct
+  type error =
+    | Invalid_timeout
+    | Request_id_exhausted
+    | Spawn_failed of spawn_monitored_error
+    | Monitor_failed of monitor_error
+    | Send_failed of send_error
+    | Server_down of exit_reason
+    | Deadline_failed of exit_reason
+    | Helper_failed of exit_reason
+    | Timeout
+
+  type ('request, 'reply, 'cast, 'state) callbacks = {
+    init : unit -> 'state;
+    handle_call : 'request -> 'state -> 'reply * 'state;
+    handle_cast : 'cast -> 'state -> 'state;
+    terminate : 'state -> unit;
+  }
+
+  type 'reply answer = Answer of 'reply | Rejected of send_error
+  type ('request, 'reply, 'cast) message =
+    | Call of 'request * 'reply answer pid
+    | Cast of 'cast
+    | Stop
+  type ('request, 'reply, 'cast) t =
+    ('request, 'reply, 'cast) message pid
+  type 'reply delivery = Started of int
+                       | Completed of int * ('reply, error) result
+  type 'reply client = {
+    inbox : 'reply delivery inbox;
+    mutable sequence : int;
+  }
+
+  let client inbox = ignore (self inbox); { inbox; sequence = 0 }
+  let next client =
+    ignore (self client.inbox);
+    if client.sequence = max_int then Error Request_id_exhausted
+    else (client.sequence <- client.sequence + 1; Ok client.sequence)
+
+  let rec loop callbacks inbox state =
+    match receive inbox with
+    | Call (request, destination) ->
+        let reply, state = callbacks.handle_call request state in
+        (match send destination (Answer reply) with
+         | Ok () -> ()
+         | Error error -> ignore (send destination (Rejected error)));
+        loop callbacks inbox state
+    | Cast request ->
+        loop callbacks inbox (callbacks.handle_cast request state)
+    | Stop -> callbacks.terminate state
+
+  let run callbacks inbox = loop callbacks inbox (callbacks.init ())
+  let of_pid pid = pid
+  let cast server request = send server (Cast request)
+  let stop server = send server Stop
+  let retire pid monitor = ignore (cancel pid); ignore (await_exit monitor)
+
+  let rec startup client monitor id =
+    match receive_or_exit client.inbox [monitor] with
+    | Exit (_, reason) -> Error (Server_down reason)
+    | Message (Started found) when found = id -> Ok ()
+    | Message _ -> startup client monitor id
+
+  let start client callbacks =
+    match next client with
+    | Error error -> Error error
+    | Ok id ->
+        let destination = self client.inbox in
+        match spawn_monitored (fun inbox ->
+          let state = callbacks.init () in
+          (match send destination (Started id) with
+           | Error _ -> failwith "Gen_server startup acknowledgement failed"
+           | Ok () -> loop callbacks inbox state)) with
+        | Error error -> Error (Spawn_failed error)
+        | Ok (server, monitor) ->
+            match startup client monitor id with
+            | Error error -> Error error
+            | Ok () -> Ok (server, monitor)
+
+  let rec parked inbox owner =
+    match receive_or_exit inbox [owner] with
+    | Exit _ -> ()
+    | Message _ -> parked inbox owner
+
+  let deliver inbox destination owner id result =
+    match send destination (Completed (id, result)) with
+    | Error _ -> failwith "Gen_server result delivery failed"
+    | Ok () -> parked inbox owner
+
+  let wait_reply inbox server timer owner =
+    match receive_or_exit inbox [server; timer; owner] with
+    | Message (Answer reply) -> Some (Ok reply)
+    | Message (Rejected error) -> Some (Error (Send_failed error))
+    | Exit (0, reason) -> Some (Error (Server_down reason))
+    | Exit (1, Normal) -> Some (Error Timeout)
+    | Exit (1, reason) -> Some (Error (Deadline_failed reason))
+    | Exit _ -> None
+
+  let request inbox server timer request =
+    match send timer () with
+    | Error error -> Some (Error (Send_failed error))
+    | Ok () ->
+        match send server (Call (request, self inbox)) with
+        | Error error -> Some (Error (Send_failed error))
+        | Ok () -> None
+
+  let broker inbox destination id server timer argument =
+    match monitor destination with
+    | Error _ -> ignore (cancel timer)
+    | Ok owner ->
+        let finish result =
+          ignore (cancel timer);
+          deliver inbox destination owner id result
+        in
+        match monitor server, monitor timer with
+        | Error error, _ | _, Error error ->
+            finish (Error (Monitor_failed error))
+        | Ok server_monitor, Ok timer_monitor ->
+            let result = match request inbox server timer argument with
+              | Some result -> Some result
+              | None -> wait_reply inbox server_monitor timer_monitor owner
+            in
+            match result with
+            | None -> ignore (cancel timer)
+            | Some result -> finish result
+
+  let rec wait client id monitor =
+    match receive_or_exit client.inbox [monitor] with
+    | Exit (_, reason) -> Error (Helper_failed reason)
+    | Message (Completed (found, result)) when found = id -> result
+    | Message _ -> wait client id monitor
+
+  let call_with_id client server argument timeout id =
+    match spawn_monitored (fun inbox ->
+      let () = receive inbox in
+      match Timer.sleep timeout with
+      | Ok () -> ()
+      | Error _ -> failwith "Gen_server deadline registration failed") with
+    | Error error -> Error (Spawn_failed error)
+    | Ok (timer, timer_monitor) ->
+        let destination = self client.inbox in
+        match spawn_monitored (fun inbox ->
+          broker inbox destination id server timer argument) with
+        | Error error ->
+            retire timer timer_monitor;
+            Error (Spawn_failed error)
+        | Ok (helper, helper_monitor) ->
+            let result = wait client id helper_monitor in
+            (* [wait] consumes the monitor only on the helper-exit path. *)
+            (match result with
+             | Error (Helper_failed _) -> ()
+             | _ -> retire helper helper_monitor);
+            retire timer timer_monitor;
+            result
+
+  external compare_float : float -> float -> int = "%compare"
+
+  let call client server argument ~timeout =
+    if compare_float timeout 0. < 0 ||
+       compare_float timeout 86400. > 0 ||
+       compare_float timeout nan = 0
+    then Error Invalid_timeout
+    else match next client with
+      | Error error -> Error error
+      | Ok id -> call_with_id client server argument timeout id
+end
+
 module Net = struct
   type listener = int
   type socket = int
