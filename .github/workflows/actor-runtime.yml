@@ -49,6 +49,15 @@ jobs:
           make -C testsuite one DIR=tests/runtime-actors USE_RUNTIME=i
           OCAMLTESTDIR=/tmp/actors-instrumented
           TESTLOG=/tmp/actors-instrumented.log
+      - name: Heap isolation acceptance gate
+        run: |
+          sh tools/ci/actions/actor-isolation.sh
+          ACTOR_ISOLATION_RUNTIME=d sh tools/ci/actions/actor-isolation.sh
+          ACTOR_ISOLATION_RUNTIME=i sh tools/ci/actions/actor-isolation.sh
+      - name: Isolation guard mutation checks
+        run: >-
+          python3 tools/ci/actions/actor-isolation-mutations.py
+          --report-dir /tmp/actor-isolation-mutations
       - name: Bytecode tooling tests
         run: |
           make -C testsuite one DIR=tests/tool-ocamlactorcheck \
